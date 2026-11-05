@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { usageSnapshot } from "./usage.mjs";
-import { GROUP_INSTRUCTIONS, OUTPUT_INSTRUCTIONS } from "./instructions.mjs";
+import { GROUP_INSTRUCTIONS, outputInstructions } from "./instructions.mjs";
 
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -132,7 +132,7 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
         updatedAt: new Date().toISOString(),
         usageSince: state.usage.since,
         turns: history ? debugHistory(history) : [],
-        instructions: [GROUP_INSTRUCTIONS, OUTPUT_INSTRUCTIONS],
+        instructions: [GROUP_INSTRUCTIONS, outputInstructions(config.model)],
         usage:
           usageSnapshot(state).groups.find(
             (item) => item.threadId === group.id

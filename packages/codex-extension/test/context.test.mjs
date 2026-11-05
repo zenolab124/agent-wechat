@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CodexClient } from '../src/codex.mjs';
 import { renderContext } from '../src/context-view.mjs';
+import { outputInstructions, OUTPUT_INSTRUCTIONS } from '../src/instructions.mjs';
 
 const usage = n => ({ inputTokens: n, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0, cacheWriteInputTokens: 0, totalTokens: n + 10 });
 
 test('persistent turns resume the same thread and account only their own usage, including early notifications', async () => {
-  const c = new CodexClient({ codexHome: '/isolated', timeoutMs: 1000 }); const requests = [];
+  const c = new CodexClient({ codexHome: '/isolated', model: 'test-model', timeoutMs: 1000 }); const requests = [];
   let round = 0; let saved = false;
   c.request = async (method, params) => {
     requests.push({ method, params });
@@ -30,7 +31,15 @@ test('persistent turns resume the same thread and account only their own usage, 
   assert.equal(requests.filter(r => r.method === 'thread/start').length, 1);
   assert.equal(requests.filter(r => r.method === 'thread/resume').length, 1);
   assert.equal(requests.find(r => r.method === 'thread/start').params.ephemeral, false);
+  assert.ok(requests.filter(r => ['thread/start', 'thread/resume'].includes(r.method)).every(r => r.params.developerInstructions.includes('"test-model"')));
   await assert.rejects(c.answer({}, { ...options, conversation: { ...conversation, profile: '/other' } }), /another Codex profile/);
+});
+
+test('model identity comes from caller configuration and is not invented when absent', () => {
+  assert.equal(outputInstructions(undefined), OUTPUT_INSTRUCTIONS);
+  assert.equal(outputInstructions(''), OUTPUT_INSTRUCTIONS);
+  assert.ok(outputInstructions('test-model').includes('"test-model"'));
+  assert.ok(outputInstructions('test-model').includes('不声称能自行核验底层版本'));
 });
 
 test('unexpected instruction sources stop before inference', async () => {

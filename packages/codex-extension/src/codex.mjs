@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { tokenUsage } from './usage.mjs';
-import { GROUP_INSTRUCTIONS, OUTPUT_INSTRUCTIONS } from './instructions.mjs';
+import { GROUP_INSTRUCTIONS, outputInstructions } from './instructions.mjs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -119,7 +119,7 @@ export class CodexClient {
     if (options.conversation && options.conversation.profile !== this.profile) throw Error('Conversation belongs to another Codex profile');
     const settings = {
       cwd: this.cwd, model: this.model ?? null, sandbox: 'read-only', approvalPolicy: 'never',
-      runtimeWorkspaceRoots: [], baseInstructions: GROUP_INSTRUCTIONS, developerInstructions: OUTPUT_INSTRUCTIONS,
+      runtimeWorkspaceRoots: [], baseInstructions: GROUP_INSTRUCTIONS, developerInstructions: outputInstructions(this.model),
     };
     const result = options.conversation
       ? await this.request('thread/resume', { ...settings, threadId: options.conversation.threadId, excludeTurns: true })

@@ -207,6 +207,10 @@ Authenticate that directory separately with official Codex login and the keyring
 credential store; do not copy authentication files. Everyday Codex configuration
 and login remain unchanged. An omitted model uses this isolated profile's default,
 so set `model` when keeping an existing model across the migration.
+When `model` is configured, the assistant receives that identifier as caller-provided
+metadata and can state it when asked. This reports the integration's configuration;
+it is not independent verification of the underlying model version. An omitted
+identifier is not guessed. The prompt inspector shows this configured identity too.
 
 The worker merges admitted incoming messages from the same group before model
 dispatch, retaining their order and sender IDs. It does not interrupt a generation
