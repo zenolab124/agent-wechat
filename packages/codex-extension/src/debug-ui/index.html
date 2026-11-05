@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>微信群助手 · 会话调试</title>
+    <link rel="stylesheet" href="/paper.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body class="paper-atmosphere">
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">群</span>
+          <div><strong>微信群助手</strong><small>会话调试</small></div>
+        </div>
+        <div class="section-label">长期会话</div>
+        <nav id="groups" aria-label="选择群会话"></nav>
+        <div class="sidebar-note">
+          <span class="badge">只读调试</span>
+          <p>在这里查看上下文。<br />在微信群里继续对话。</p>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <div class="eyebrow">CONVERSATION INSPECTOR</div>
+            <h1 id="title">会话记录</h1>
+            <p id="subtitle">正在读取本机记录…</p>
+          </div>
+          <div class="actions">
+            <button id="theme" class="quiet">切换明暗</button>
+            <span id="sync" role="status">连接中</span
+            ><button id="refresh">刷新</button>
+          </div>
+        </header>
+        <p id="error" class="error" role="alert" hidden></p>
+        <section class="stats" aria-label="本群累计用量">
+          <div class="stat">
+            <small>输入 token · 群累计</small><strong id="input">—</strong>
+          </div>
+          <div class="stat">
+            <small>缓存输入 · 已包含在输入中</small
+            ><strong id="cached">—</strong>
+          </div>
+          <div class="stat">
+            <small>输出 token · 群累计</small><strong id="output">—</strong>
+          </div>
+          <div class="stat">
+            <small>模型调用 / 接受发送 · 群累计</small
+            ><strong id="calls">—</strong>
+          </div>
+        </section>
+        <div class="workspace">
+          <section class="conversation">
+            <div class="conversation-tools">
+              <h2>对话时间线 <span id="turn-count"></span></h2>
+              <label
+                ><span class="sr-only">搜索当前会话</span
+                ><input
+                  id="search"
+                  type="search"
+                  placeholder="搜索消息或回复" /></label
+              ><button id="latest" class="quiet">到最新 ↓</button>
+            </div>
+            <div id="turns" aria-label="会话消息"></div>
+            <p class="footnote">
+              展示本会话实际交给助手的消息与最终答复。长会话可能自动压缩；这里的历史留存不等于模型每轮都原文读取全部旧消息。
+            </p>
+          </section>
+          <aside class="inspector">
+            <section class="panel">
+              <h2>运行信息</h2>
+              <dl>
+                <dt>模型</dt>
+                <dd id="model">—</dd>
+                <dt>固定会话 ID</dt>
+                <dd id="thread">—</dd>
+                <dt>前置配额</dt>
+                <dd id="limits">—</dd>
+                <dt>本次查看</dt>
+                <dd>每 5 秒刷新，不调用模型</dd>
+                <dt>用量完整性</dt>
+                <dd id="usage-status">—</dd>
+                <dt>总 token · 群累计</dt>
+                <dd id="total">—</dd>
+                <dt>前置限流拦截</dt>
+                <dd id="blocked">—</dd>
+                <dt>统计起点</dt>
+                <dd id="usage-since">—</dd>
+              </dl>
+            </section>
+            <details class="panel" id="instructions">
+              <summary>查看固定提示词</summary>
+              <p class="muted">群助手配置的提示词；不包含平台隐藏指令。</p>
+              <pre id="prompt"></pre>
+            </details>
+            <section class="panel">
+              <h2>最近任务与回执</h2>
+              <p class="muted">包含本群较早的任务；发送状态以回执为准。</p>
+              <div id="tasks"></div>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

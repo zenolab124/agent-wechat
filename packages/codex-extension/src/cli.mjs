@@ -8,17 +8,27 @@ import { CodexClient } from './codex.mjs';
 import { StateStore } from './state.mjs';
 import { usageSnapshot } from './usage.mjs';
 import { writeContextView } from './context-view.mjs';
+import { startDebugServer } from './debug-server.mjs';
 
 const [command, configPath, requestedGroup] = process.argv.slice(2);
-if (!['doctor', 'run', 'codex-test', 'usage', 'context'].includes(command) || !configPath) {
-  console.error('Usage: wx-codex doctor|run|codex-test|usage|context /absolute/private/config.json [groupId]'); process.exit(2);
+if (!['doctor', 'run', 'codex-test', 'usage', 'context', 'debug'].includes(command) || !configPath) {
+  console.error('Usage: wx-codex doctor|run|codex-test|usage|context|debug /absolute/private/config.json [groupId|debugPort]'); process.exit(2);
 }
-let store; let codex;
+let store; let codex; let debugServer;
 const controller = new AbortController();
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { controller.abort(); codex?.close(); });
 try {
   const config = validateConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')), { bootstrap: command !== 'run' });
-  if (command === 'usage') {
+  if (command === 'debug') {
+    delete process.env.AGENT_WECHAT_TOKEN;
+    const port = requestedGroup === undefined ? 16175 : Number(requestedGroup);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('Debug port must be between 1024 and 65535');
+    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome });
+    await codex.start();
+    debugServer = await startDebugServer({ config, codex, port });
+    console.log(JSON.stringify({ event: 'debug.ready', url: `http://127.0.0.1:${port}` }));
+    await new Promise(resolve => { if (controller.signal.aborted) resolve(); else controller.signal.addEventListener('abort', resolve, { once: true }); });
+  } else if (command === 'usage') {
     const snapshot = JSON.parse(readFileSync(join(config.stateDir, 'state.json'), 'utf8'));
     const binding = { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername };
     if (JSON.stringify(snapshot.binding) !== JSON.stringify(binding)) throw Error('Usage/account binding mismatch');
@@ -70,4 +80,4 @@ try {
 } catch (error) {
   // Do not mirror upstream error bodies, messages or credentials into service logs.
   console.error(JSON.stringify({ event: 'worker.stopped', error: error.name, code: error.code ?? null })); process.exitCode = controller.signal.aborted ? 0 : 1;
-} finally { codex?.close(); store?.close(); }
+} finally { debugServer?.closeAllConnections(); debugServer?.close(); codex?.close(); store?.close(); }

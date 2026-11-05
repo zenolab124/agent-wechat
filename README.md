@@ -159,7 +159,7 @@ the checkout with these fields:
 | `accountId`, `ownUsername` | Exact daemon account and authenticated WeChat identity |
 | `stateDir` | Absolute private worker directory, separate from the native profile |
 | `groups` | Array of `{ id, senders, mode, prefix? }`; exact ordinary-group IDs and sender IDs only |
-| `mode` | Per-group `prefix` requires the configured text prefix; `selective` lets Codex decide whether to answer without an @mention |
+| `mode` | Per-group `prefix` requires the configured text prefix; `selective` answers concrete questions, explicit requests or related follow-ups without an @mention, and defaults to silence for small talk/statements |
 | `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
 | `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
 | `cooldownMs` | Minimum interval between accepted replies per group; defaults to 10000 |
@@ -181,6 +181,7 @@ node packages/codex-extension/src/cli.mjs codex-test /absolute/private/config.js
 node packages/codex-extension/src/cli.mjs run /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs usage /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs context /absolute/private/config.json [groupId]
+node packages/codex-extension/src/cli.mjs debug /absolute/private/config.json [port]
 ```
 
 Supply `AGENT_WECHAT_TOKEN` from the local credential store privately at launch;
@@ -254,6 +255,18 @@ inputs and final decisions, excluding hidden reasoning and server instructions;
 send acceptance remains a separate receipt. Editing the view does not change model
 memory. Open the returned file in the desktop app's right panel. Isolated-profile
 threads are not assumed to appear in the everyday app sidebar.
+
+For a chat-style debugging view, run `debug` and open `http://127.0.0.1:16175`.
+An optional port overrides 16175. This separate read-only process shows each
+configured group's persisted conversation, searchable messages, raw user inputs
+and final output, configured prompts, cumulative group usage, limits and recent
+send receipts. It refreshes every five seconds while the page is visible. Usage
+can include earlier calls outside the displayed persistent thread. It reads the
+existing Codex history through the authenticated local App Server without a model
+turn, daemon token, worker lock or additional chat archive. The endpoint binds only
+to IPv4 loopback, rejects cross-origin access and provides no send/edit controls.
+It does not expose hidden reasoning or platform instructions. Stop with Ctrl-C;
+the chat worker and WeChat connection remain independent.
 
 Sends have stable keys; uncertain submissions are inspected, never blindly retried.
 An unresolved receipt holds subsequent replies in that group. A worker lock
