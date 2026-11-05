@@ -324,7 +324,7 @@ export class NativeWeChatClient {
       catch (error) { if (!(error instanceof NativeApiError)) throw error; return { messageId, assets: [], error: error.code }; }
     })) };
   }
-  transferMedia(accountId: string, input: MediaTransferRequest): Promise<MediaJob> { return this.request(`v1/accounts/${id(accountId)}/messages/${id(input.messageId)}/media-transfers`, { method: "POST", body: JSON.stringify(input) }); }
+  transferMedia(accountId: string, input: MediaTransferRequest, signal?: AbortSignal): Promise<MediaJob> { return this.request(`v1/accounts/${id(accountId)}/messages/${id(input.messageId)}/media-transfers`, { method: "POST", body: JSON.stringify(input), signal }); }
   mediaAsset(accountId: string, assetId: string): Promise<MediaAsset> { return this.request(`v1/accounts/${id(accountId)}/media/${id(assetId)}`); }
   job(accountId: string, jobId: string, signal?: AbortSignal): Promise<MediaJob> { return this.request(`v1/accounts/${id(accountId)}/jobs/${id(jobId)}`, { signal }); }
   cancelJob(accountId: string, jobId: string): Promise<MediaJob> { return this.request(`v1/accounts/${id(accountId)}/jobs/${id(jobId)}/cancel`, { method: "POST", body: "{}" }); }

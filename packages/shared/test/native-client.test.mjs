@@ -6,6 +6,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NativeApiError, NativeWeChatClient, validateNativeBaseUrl, isNativeTombstone, NATIVE_MAX_SOURCE_BYTES, NATIVE_MAX_ORDINARY_SOURCE_BYTES, NATIVE_MAX_VIDEO_SOURCE_BYTES } from '../src/native-client.ts';
 const options = { baseUrl: 'http://127.0.0.1:6174', token: 'fixture-secret' };
+test('inbound media transfer cancellation interrupts the request without retrying its POST', async () => {
+  let attempts = 0; let began;
+  const started = new Promise(resolve => { began = resolve; });
+  const client = new NativeWeChatClient({ ...options, fetch: async (_url, init) => {
+    attempts++; began();
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+  } });
+  const controller = new AbortController();
+  const request = client.transferMedia('a', { messageId: 'message', assetId: null, quality: 'best' }, controller.signal);
+  await started; controller.abort();
+  await assert.rejects(request, { name: 'AbortError' }); assert.equal(attempts, 1);
+});
 test('classification keeps conversation kind, unknown relationship and cached language labels separate', async () => {
   const classification = { category: 'openim', namespace: 'openim', businessType: null, businessKind: null, openIm: { appId: 'app', wordingId: 'label', wordings: [{ languageId: 0, text: 'Example' }, { languageId: 1, text: '示例' }], applications: [] } };
   const client = new NativeWeChatClient({ ...options, fetch: async url => {

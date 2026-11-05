@@ -5,11 +5,18 @@
   "type": "module",
   "description": "Isolated local Codex conversation worker for the native WeChat daemon",
   "license": "MIT",
-  "bin": { "wx-codex": "./src/cli.mjs" },
+  "bin": {
+    "wx-codex": "./src/cli.mjs"
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/cli.mjs && node --check src/bridge.mjs && node --check src/codex.mjs && node --check src/state.mjs && node --check src/usage.mjs && node --check src/context-view.mjs && node --check src/instructions.mjs && node --check src/quotes.mjs && node --check src/debug-server.mjs && node --check src/debug-ui/app.mjs"
+    "check": "node --check src/cli.mjs && node --check src/bridge.mjs && node --check src/codex.mjs && node --check src/state.mjs && node --check src/usage.mjs && node --check src/context-view.mjs && node --check src/instructions.mjs && node --check src/quotes.mjs && node --check src/message-content.mjs && node --check src/visuals.mjs && node --check src/debug-server.mjs && node --check src/debug-ui/app.mjs"
   },
-  "engines": { "node": ">=24.22.1" },
-  "dependencies": { "@agent-wechat/shared": "workspace:*" }
+  "engines": {
+    "node": ">=24.22.1"
+  },
+  "dependencies": {
+    "@agent-wechat/shared": "workspace:*",
+    "sharp": "0.34.5"
+  }
 }

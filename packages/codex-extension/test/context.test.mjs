@@ -24,13 +24,14 @@ test('persistent turns resume the same thread and account only their own usage, 
     return {};
   };
   let conversation;
-  const options = { persist: true, onThread: info => { saved = true; conversation = info; } };
+  const options = { persist: true, imagePaths: ['/private/model-images/example.jpg'], onThread: info => { saved = true; conversation = info; } };
   assert.equal((await c.answer({}, options)).usage.totalTokens, 110);
   const second = await c.answer({}, { ...options, conversation });
   assert.equal(second.text, 'correct'); assert.equal(second.usage.totalTokens, 210);
   assert.equal(requests.filter(r => r.method === 'thread/start').length, 1);
   assert.equal(requests.filter(r => r.method === 'thread/resume').length, 1);
   assert.equal(requests.find(r => r.method === 'thread/start').params.ephemeral, false);
+  assert.deepEqual(requests.find(r => r.method === 'turn/start').params.input.slice(1), [{ type: 'localImage', path: '/private/model-images/example.jpg' }]);
   assert.ok(requests.filter(r => ['thread/start', 'thread/resume'].includes(r.method)).every(r => r.params.developerInstructions.includes('"test-model"')));
   await assert.rejects(c.answer({}, { ...options, conversation: { ...conversation, profile: '/other' } }), /another Codex profile/);
 });

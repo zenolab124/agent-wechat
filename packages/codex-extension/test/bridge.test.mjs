@@ -7,6 +7,7 @@ import { Bridge, validateConfig, replyKey } from '../src/bridge.mjs';
 import { StateStore } from '../src/state.mjs';
 import { CodexClient, workerArgs } from '../src/codex.mjs';
 import { verifyAssistantQuote } from '../src/quotes.mjs';
+import { createHash } from 'node:crypto';
 
 function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'wx-codex-test-'));
@@ -240,4 +241,48 @@ test('quote identity lookup paginates without substituting source content and st
   assert.equal(await verifyAssistantQuote(f.client, f.config, f.message), true); assert.equal(reads, 2);
   f.client.messages = async () => ({ items: [], nextCursor: 'same' });
   assert.equal(await verifyAssistantQuote(f.client, f.config, f.message), false);
+});
+
+test('non-text visuals require opt-in and a permitted sender; video, voice and files never fetch media or call the model', async t => {
+  for (const mutation of [{ type: 43 }, { type: 62 }, { type: 34 }, { type: 49, appMessageType: 6 },
+    { type: 49, appMessageType: 4 }, { type: 49, appMessageType: 51 }, { type: 3, senderId: 'outsider' }]) {
+    const f = fixture(t, { groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective', receiveImagesAndStickers: true }] });
+    Object.assign(f.message, mutation, { body: null });
+    f.client.mediaAssets = async () => { assert.fail('filtered content must not fetch media'); };
+    await f.bridge.accept(f.event()); await f.bridge.drain(); assert.equal(f.generations.length, 0);
+  }
+  const f = fixture(t, { groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective' }] });
+  Object.assign(f.message, { type: 3, body: null }); await f.bridge.accept(f.event()); await f.bridge.drain();
+  assert.equal(f.generations.length, 0);
+});
+
+test('images and independent stickers reach Codex as ordered local images; quota prevents media work first', async t => {
+  for (const mutation of [{ type: 3 }, { type: 47 }, { type: 49, appMessageType: 8 }]) {
+    const f = fixture(t, { maxCallsPerHour: 1, callIntervalMs: 0, cooldownMs: 0,
+      groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective', receiveImagesAndStickers: true }] });
+    f.bridge.config.stateDir = f.directory;
+    Object.assign(f.message, mutation, { body: null });
+    const bytes = readFileSync(new URL('../../openclaw-extension/test/fixtures/native-model.png', import.meta.url));
+    let mediaReads = 0; let paths;
+    f.client.mediaAssets = async () => { mediaReads++; return { items: [{ id: 'image', accountId: f.config.accountId, messageId: f.message.id,
+      kind: mutation.type === 3 ? 'image' : 'sticker', state: 'available', sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length }] }; };
+    f.client.mediaContent = async () => ({ bytes });
+    f.codex.answer = async (context, options) => { f.generations.push(context); paths = options.imagePaths; return { reply: false }; };
+    await f.bridge.accept(f.event()); await f.bridge.drain();
+    assert.equal(paths.length, 1); assert.ok(readFileSync(paths[0]).length > 0);
+    assert.equal(f.generations[0].messages[0].vision.imageIndex, 1);
+    assert.equal(f.generations[0].messages[0].vision.status, 'ready');
+    assert.equal(f.calls.length, 0); // An image alone does not force a reply.
+    const previous = mediaReads; f.message.id = 'second';
+    await f.bridge.accept(f.event('2')); await f.bridge.drain();
+    assert.equal(mediaReads, previous); assert.equal(f.generations.length, 1);
+  }
+});
+
+test('visual batches split at four attachments while preserving admission order', async t => {
+  const f = fixture(t, { batchWindowMs: 1000, batchMaxWaitMs: 3000,
+    groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective', receiveImagesAndStickers: true }] });
+  Object.assign(f.message, { type: 3, body: null });
+  for (let n = 1; n <= 5; n++) { f.message.id = `image-${n}`; await f.bridge.accept(f.event(String(n))); }
+  assert.deepEqual(Object.values(f.store.data.tasks).map(task => task.inputs.length), [4, 1]);
 });

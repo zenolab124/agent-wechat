@@ -51,6 +51,7 @@ function message(parent, role, text, at, sender, quote) {
     );
   box.append(el("div", text, "body"));
   parent.append(box);
+  return box;
 }
 function renderTurns() {
   if (!current) return;
@@ -85,8 +86,47 @@ function renderTurns() {
       }
       const rows = input?.messages;
       if (Array.isArray(rows))
-        for (const row of rows)
-          message(box, "user", row.text, row.at, row.sender, row.quote);
+        for (const row of rows) {
+          const bubble = message(
+            box,
+            "user",
+            row.text,
+            row.at,
+            row.sender,
+            row.quote
+          );
+          if (row.vision) {
+            const id = turn.imageIds?.[row.vision.imageIndex - 1];
+            if (
+              row.vision.status === "ready" &&
+              typeof id === "string" &&
+              /^[a-f0-9]{64}$/.test(id)
+            ) {
+              const image = el("img", undefined, "model-image");
+              image.src = `/api/image/${id}`;
+              image.alt =
+                row.kind === "sticker"
+                  ? "表情包的模型静态预览"
+                  : "提供给模型的图片";
+              image.loading = "lazy";
+              bubble.append(image);
+            }
+            bubble.append(
+              el(
+                "small",
+                row.vision.status === "ready"
+                  ? `已提供给模型 · ${
+                      row.vision.representation === "first-frame"
+                        ? "动态表情首帧"
+                        : row.vision.representation === "native-still-preview"
+                        ? "微信静态预览"
+                        : "静态图像"
+                    }`
+                  : `图片内容尚不可读：${row.vision.status}`
+              )
+            );
+          }
+        }
       else message(box, "user", raw);
     }
     for (const raw of turn.answers) {
@@ -166,6 +206,8 @@ function render(data) {
   } 秒合并`;
   if (data.limits.replyToAssistantQuotes)
     $("limits").textContent += " · 引用助手必回复，免普通接话配额拦截";
+  if (data.limits.receiveImagesAndStickers)
+    $("limits").textContent += " · 接收文字/图片/表情，过滤视频/语音/文件";
   $("polling").textContent = `${
     (data.limits.pollIntervalMs ?? 1000) / 1000
   } 秒`;

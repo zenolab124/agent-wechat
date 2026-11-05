@@ -142,7 +142,8 @@ export class CodexClient {
           awaitingStart: true, buffer: [], strictTurnId: true, usageMode: options.persist ? 'last' : 'total' });
       });
       final.catch(() => {});
-      const started = await this.request('turn/start', { threadId, input: [{ type: 'text', text: JSON.stringify(context) }], environments: [], runtimeWorkspaceRoots: [], effort: 'low' });
+      if (options.imagePaths && (!Array.isArray(options.imagePaths) || options.imagePaths.length > 4 || options.imagePaths.some(path => typeof path !== 'string' || !path.startsWith('/')))) throw Error('Invalid bounded image input');
+      const started = await this.request('turn/start', { threadId, input: [{ type: 'text', text: JSON.stringify(context) }, ...(options.imagePaths ?? []).map(path => ({ type: 'localImage', path }))], environments: [], runtimeWorkspaceRoots: [], effort: 'low' });
       const turn = this.turns.get(threadId);
       if (turn) { turn.turnId = started.turn.id; turn.awaitingStart = false; const buffer = turn.buffer; turn.buffer = []; for (const event of buffer) this.onMessage(event); }
       return await final;

@@ -1,9 +1,16 @@
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
+import {
+  readFileSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  constants,
+} from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { usageSnapshot } from "./usage.mjs";
 import { GROUP_INSTRUCTIONS, outputInstructions } from "./instructions.mjs";
+import { imageDirectory, ownedImageId } from "./visuals.mjs";
 
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -25,7 +32,7 @@ export function taskTiming(task) {
   };
 }
 
-export function debugHistory(history) {
+export function debugHistory(history, directory) {
   return history.turns.map((turn) => ({
     id: turn.id,
     status: turn.status,
@@ -42,6 +49,17 @@ export function debugHistory(history) {
         (item) => item.type === "agentMessage" && item.phase === "final_answer"
       )
       .map((item) => item.text),
+    imageIds: (turn.items ?? [])
+      .filter((item) => item.type === "userMessage")
+      .flatMap((item) =>
+        (item.content ?? [])
+          .filter((part) => ["localImage", "image"].includes(part.type))
+          .map((part) =>
+            part.type === "localImage"
+              ? ownedImageId(part.path, directory)
+              : null
+          )
+      ),
   }));
 }
 
@@ -67,6 +85,8 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
     return state;
   };
   snapshot();
+  const imageRoot = imageDirectory(config.stateDir);
+  const allowedImages = new Set();
   const server = createServer(async (request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -95,6 +115,30 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
       return send(405, { error: "此调试页只提供读取操作" });
     try {
       const url = new URL(request.url, `http://${host}`);
+      const requestedImage = /^\/api\/image\/([a-f0-9]{64})$/.exec(
+        url.pathname
+      )?.[1];
+      if (requestedImage) {
+        snapshot();
+        if (!allowedImages.has(requestedImage))
+          return send(404, { error: "图片不属于已读取的群会话" });
+        const fd = openSync(
+          join(imageRoot, `${requestedImage}.jpg`),
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+        );
+        let bytes;
+        try {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || stat.size > 5 * 1024 * 1024)
+            throw Error("Invalid model image");
+          bytes = readFileSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+        if (createHash("sha256").update(bytes).digest("hex") !== requestedImage)
+          throw Error("Model image changed");
+        return send(200, bytes, "image/jpeg");
+      }
       if (assets.has(url.pathname)) {
         const [file, type] = assets.get(url.pathname);
         return send(
@@ -125,13 +169,16 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
       const history = conversation
         ? await codex.readConversation(conversation.threadId)
         : null;
+      const turns = history ? debugHistory(history, imageRoot) : [];
+      for (const id of turns.flatMap((turn) => turn.imageIds).filter(Boolean))
+        allowedImages.add(id);
       return send(200, {
         group,
         threadId: conversation?.threadId ?? null,
         model: config.model ?? history?.thread.model ?? null,
         updatedAt: new Date().toISOString(),
         usageSince: state.usage.since,
-        turns: history ? debugHistory(history) : [],
+        turns,
         instructions: [GROUP_INSTRUCTIONS, outputInstructions(config.model)],
         usage:
           usageSnapshot(state).groups.find(
@@ -145,6 +192,9 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
           replyToAssistantQuotes:
             config.groups.find((item) => item.id === group.id)
               .replyToAssistantQuotes === true,
+          receiveImagesAndStickers:
+            config.groups.find((item) => item.id === group.id)
+              .receiveImagesAndStickers === true,
         },
         tasks: Object.values(state.tasks)
           .filter((task) => task.threadId === group.id)

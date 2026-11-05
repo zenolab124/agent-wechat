@@ -1,3 +1,5 @@
+import { describeMessage } from './message-content.mjs';
+
 export function receivedQuote(message) {
   const quote = message.quote;
   if (message.type !== 49 || message.appMessageType !== 57 || !quote || quote.state !== 'embedded'
@@ -18,7 +20,7 @@ export function quotedInput(message) {
 }
 
 export function inputChars(message) {
-  return Math.min(4000, message.body.length) + (quotedInput(message)?.text.length ?? 0);
+  return (describeMessage(message)?.text.length ?? 0) + (quotedInput(message)?.text.length ?? 0);
 }
 
 // Verify identity against the canonical same-chat store, but never substitute a

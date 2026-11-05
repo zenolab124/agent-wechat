@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { groupUsage, recordResult } from './usage.mjs';
 import { receivedQuote, quotesAssistant, quotedInput, inputChars, verifyAssistantQuote } from './quotes.mjs';
+import { describeMessage, isVisualMessage } from './message-content.mjs';
+import { prepareVisual } from './visuals.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
   const url = new URL(value.baseUrl);
@@ -17,6 +19,7 @@ export function validateConfig(value, { bootstrap = false } = {}) {
       || !['prefix', 'selective'].includes(group.mode) || (group.mode === 'prefix' && (typeof group.prefix !== 'string' || !group.prefix.trim()))) throw Error('Invalid exact group/sender policy');
     seen.add(group.id);
     if (group.replyToAssistantQuotes !== undefined && typeof group.replyToAssistantQuotes !== 'boolean') throw Error('replyToAssistantQuotes must be boolean');
+    if (group.receiveImagesAndStickers !== undefined && typeof group.receiveImagesAndStickers !== 'boolean') throw Error('receiveImagesAndStickers must be boolean');
   }
   if (value.sendEnabled !== undefined && typeof value.sendEnabled !== 'boolean') throw Error('sendEnabled must be boolean');
   if (value.persistentConversations !== undefined && typeof value.persistentConversations !== 'boolean') throw Error('persistentConversations must be boolean');
@@ -56,17 +59,19 @@ export class Bridge {
   }
   policy(message) {
     const group = this.config.groups.find(group => group.id === message.threadId);
+    const content = describeMessage(message);
+    if (!content) return null;
     const direct = group?.replyToAssistantQuotes === true && quotesAssistant(message, this.config.ownUsername);
     const quote = group?.replyToAssistantQuotes === true && receivedQuote(message);
     const senderAllowed = group?.senders.includes(message.senderId) || direct;
-    const typeAllowed = message.type === 1 || !!quote;
+    const typeAllowed = message.type === 1 || !!quote || group?.receiveImagesAndStickers === true && isVisualMessage(message);
     if (message.accountId !== this.config.accountId || message.direction !== 'incoming' || message.senderId === this.config.ownUsername
       || typeof message.senderId !== 'string' || !message.senderId
       || !senderAllowed || !typeAllowed
-      || typeof message.body !== 'string' || (!message.body.trim() && !direct) || message.recall
+      || (!content.text.trim() && !direct && !isVisualMessage(message)) || message.recall
       || !message.createdAt || Date.parse(message.createdAt) < Date.parse(this.store.data.activatedAt) || !Number.isFinite(Date.parse(message.createdAt))
       || this.now() - Date.parse(message.createdAt) > 300000 || Date.parse(message.createdAt) - this.now() > 60000) return null;
-    if (group.mode === 'prefix' && !message.body.trimStart().startsWith(group.prefix) && !direct) return null;
+    if (group.mode === 'prefix' && !content.text.trimStart().startsWith(group.prefix) && !direct) return null;
     return group;
   }
   assistantQuote(message) {
@@ -95,10 +100,12 @@ export class Bridge {
         const tasks = Object.values(this.store.data.tasks);
         if (!tasks.some(task => (task.inputs ?? [task]).some(input => input.messageId === message.id))) {
           const now = observedAt;
-          const ref = { messageId: message.id, version: message.version, fingerprint: messageFingerprint(message), chars: inputChars(message) };
+          const visual = isVisualMessage(message);
+          const ref = { messageId: message.id, version: message.version, fingerprint: messageFingerprint(message), chars: inputChars(message), ...(visual ? { visual: true } : {}) };
           const batch = this.config.batchWindowMs > 0 && tasks.find(task => task.state === 'pending' && task.threadId === message.threadId
             && task.inputs && now - task.firstReceivedAt < this.config.batchMaxWaitMs
             && now - task.lastReceivedAt <= this.config.batchWindowMs && task.inputs.length < this.config.batchMaxMessages
+            && task.inputs.filter(input => input.visual).length + Number(visual) <= 4
             && task.inputs.reduce((sum, input) => sum + input.chars, 0) + ref.chars <= 8000);
           const usage = groupUsage(this.store.data, message.threadId); usage.observedMessages++;
           if (batch) { batch.inputs.push(ref); batch.lastReceivedAt = now; usage.mergedMessages++; }
@@ -194,13 +201,35 @@ export class Bridge {
         .map(item => ({ sender: item.senderId, text: item.body?.slice(0, 2000), at: item.createdAt })).reverse();
       await this.identity();
       if (!await this.inputs(task)) { this.ignore(task); return; }
+      const modelMessages = []; const imagePaths = [];
+      for (const message of messages) {
+        const content = describeMessage(message);
+        const input = { sender: message.senderId, text: content.text, at: message.createdAt,
+          ...(content.kind !== 'text' ? { kind: content.kind } : {}), ...(quotedInput(message) ? { quote: quotedInput(message) } : {}) };
+        if (isVisualMessage(message) && group.receiveImagesAndStickers === true) {
+          const visual = await prepareVisual({ client: this.client, config: this.config, message, signal: this.signal,
+            assertCurrent: async () => { await this.identity(); if (!await this.inputs(task)) throw Object.assign(Error('Visual source changed'), { code: 'VISUAL_INTEGRITY' }); } });
+          input.vision = { status: visual.status, ...(visual.status === 'ready' ? {
+            imageIndex: imagePaths.length + 1, width: visual.width, height: visual.height, representation: visual.representation,
+          } : {}) };
+          if (visual.status === 'ready') imagePaths.push(visual.path);
+        } else if (isVisualMessage(message)) {
+          input.vision = { status: 'disabled' };
+        }
+        modelMessages.push(input);
+      }
+      if (messages.some(message => isVisualMessage(message))) {
+        await this.identity();
+        if (!await this.inputs(task)) { this.ignore(task); return; }
+      }
       // Reserve one call and its whole batch before any model request can leave.
       task.state = 'generating'; usage.callsStarted++; usage.lastCallAt = this.now(); usage.callTimes.push(usage.lastCallAt);
       task.modelStartedAt = usage.lastCallAt;
       this.store.save();
       let decision;
       try {
-        decision = await this.codex.answer({ history, messages: messages.map(message => ({ sender: message.senderId, text: message.body.slice(0, 4000), at: message.createdAt, ...(quotedInput(message) ? { quote: quotedInput(message) } : {}) })), mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}) }, this.config.persistentConversations ? {
+        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}) }, this.config.persistentConversations ? {
+          imagePaths,
           persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
           onThread: info => {
             const existing = this.store.data.conversations[task.threadId];
@@ -209,7 +238,7 @@ export class Bridge {
             this.store.data.conversations[task.threadId] = { ...info, seenMessageIds: [...new Set([...(existing?.seenMessageIds ?? []), ...messages.map(message => message.id)])].slice(-2000) };
             this.store.save();
           },
-        } : {});
+        } : { imagePaths });
         task.modelCompletedAt = this.now();
         if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > 1600)) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
       } catch (error) {

@@ -158,8 +158,9 @@ the checkout with these fields:
 | `baseUrl` | Explicit local daemon URL, such as `http://127.0.0.1:16174` |
 | `accountId`, `ownUsername` | Exact daemon account and authenticated WeChat identity |
 | `stateDir` | Absolute private worker directory, separate from the native profile |
-| `groups` | Array of `{ id, senders, mode, prefix?, replyToAssistantQuotes? }`; exact ordinary-group IDs and sender IDs only |
+| `groups` | Array of `{ id, senders, mode, prefix?, replyToAssistantQuotes?, receiveImagesAndStickers? }`; exact ordinary-group IDs and sender IDs only |
 | `replyToAssistantQuotes` | Per-group opt-in, false by default. Any member quoting a verified assistant message in this group triggers a reply, without prefix or ordinary chatter quota/silence gates |
+| `receiveImagesAndStickers` | Per-group opt-in, false by default. In selective mode, receive pictures and independent stickers as static model images; ordinary sender admission and reply policy still apply |
 | `mode` | Per-group `prefix` requires the configured text prefix; `selective` answers concrete questions, explicit requests or related follow-ups without an @mention, and defaults to silence for small talk/statements |
 | `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
 | `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
@@ -258,7 +259,7 @@ regenerated; its call reservation remains consumed. A crash can leave actual tok
 usage unknown. Pending batch metadata contains message references and fingerprints,
 not copies of settled chat text. Do not restore an older journal over later sends.
 
-Only fresh committed incoming text is eligible; self messages, catch-up/imports,
+Only fresh committed incoming text and opted-in visual messages are eligible; self messages, catch-up/imports,
 old messages, recalls and other groups are ignored. Sender exceptions require the
 opt-in verified-assistant-quote route. In the default temporary
 mode, history is fetched from the native store, with at most 12 messages from
@@ -267,6 +268,27 @@ Codex thread and appends only newly admitted batches; earlier temporary calls an
 unadmitted group traffic are not imported. Codex retains the assistant interactions,
 including silent decisions. Long histories may be compacted by Codex; stored history
 does not guarantee every old message remains verbatim in model context.
+
+Text includes Unicode emoji and WeChat text emoticon markers. With
+`receiveImagesAndStickers`, ordinary pictures (type 3), stickers (47 or 49/8),
+and images embedded in admitted quotes are fetched through the account-scoped
+native media API. Video, voice, files and other attachment messages are filtered
+before media preparation or inference. The daemon's own media cache policy is
+independent. Source bytes and native previews must match their account, message,
+size and SHA-256 metadata. Each visual can wait up to eight seconds for availability;
+missing/expired/oversized content is marked unreadable, never described as seen.
+The extension accepts at most 16 MiB per source and 24 megapixels, makes a JPEG
+preview up to 1600 pixels per side and 5 MiB, and sends at most four images per
+model batch. GIF/animated stickers use the first frame; native still previews
+are labeled separately. A picture or sticker alone does not require a reply.
+
+Model previews are private derived attachments under `stateDir/model-images`,
+with files restricted to their owner. Persistent threads retain these paths so
+follow-ups and debugging can access the same image; there is no automatic expiry.
+They are not a second WeChat media database. The debug view displays only model
+images referenced by configured-group history, without exposing arbitrary files,
+native source URLs or inline image data. Clearing these files can make earlier
+visual context unavailable; preserve them with the corresponding Codex history.
 
 The v3 sidecar preserves existing quotas, cursors and send receipts and adds only
 group-to-thread/profile bindings and message reference metadata. Canonical chat
@@ -304,7 +326,7 @@ stopped before removing only that worker's stale `worker.lock`.
 
 Codex runs with read-only sandbox, no approvals, empty execution environments,
 disabled shell/Apps/web/skills and no external MCP tools. Knowledge-base access,
-media, direct messages, group management and unattended service installation are
+outgoing media, voice/file understanding, direct messages, group management and unattended service installation are
 outside this initial extension. The package is private and workspace-only; it is
 not published to npm.
 

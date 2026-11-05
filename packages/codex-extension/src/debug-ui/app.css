@@ -252,6 +252,15 @@ input::placeholder {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.model-image {
+  display: block;
+  max-width: 100%;
+  max-height: 300px;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  object-fit: contain;
+}
 .message .who strong {
   color: var(--primary);
   font-weight: 600;
