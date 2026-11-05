@@ -144,6 +144,9 @@ local Codex App Server. It reuses the native SDK and daemon without OpenClaw.
 Node 24.22.1 or newer and an already authenticated `codex` executable are required.
 The native transport remains pinned to upstream v1.4.0; a fresh profile on macOS
 still needs real account and group acceptance. No account-safety guarantee is made.
+The phone can identify this connection as Linux WeChat because the backend uses
+the Linux client identity, even when its executable runs on macOS. The worker
+does not automate the official macOS app.
 
 Use a dedicated managed account/profile and an explicit loopback URL. Do not use
 `auth login --official`, import an everyday account's profile, or scan its QR with
@@ -176,6 +179,9 @@ do not put it in the JSON config or commit it. `doctor` is read-only. `codex-tes
 checks model handoff without sending to WeChat. Worker logs contain status events,
 not message bodies. Start with `sendEnabled: false`, then confirm the exact group,
 sender and test message before enabling live replies.
+An internal timeout from the read-only Codex account preflight is retried at most
+twice using the same process and login. Authentication rejections and WeChat send
+submissions are not retried.
 Before QR login, `doctor` and `codex-test` also accept an unconfigured identity
 with `groups: []`; `run` always requires the pinned identity and explicit groups.
 

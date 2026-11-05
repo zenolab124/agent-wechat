@@ -46,7 +46,8 @@ export class Bridge {
   async accept(event) {
     if (!/^\d+$/.test(event.cursor)) throw Error('Invalid event cursor');
     if (BigInt(event.cursor) <= BigInt(this.store.data.cursor)) return;
-    if (event.kind === 'message.committed' && event.data.origin === 'live') {
+    if (event.kind === 'message.committed' && event.data.origin === 'live'
+      && this.config.groups.some(group => group.id === event.data.threadId)) {
       if (typeof event.data.messageId !== 'string') throw Error('Missing committed message ID');
       const message = await this.client.message(this.config.accountId, event.data.messageId);
       if (message.id !== event.data.messageId || message.accountId !== this.config.accountId || message.threadId !== event.data.threadId) throw Error('Message/event identity mismatch');

@@ -115,8 +115,14 @@ test('a pending native receipt blocks following messages in that group', async t
   assert.equal(f.calls.length, 1); assert.equal(f.generations.length, 1);
 });
 
+test('events outside admitted groups do not read message bodies', async t => {
+  const f = fixture(t); let reads = 0; f.client.message = async () => { reads++; throw Error('must not read this group'); };
+  const event = f.event(); event.data.threadId = 'other@chatroom';
+  await f.bridge.accept(event); assert.equal(reads, 0); assert.equal(f.store.data.cursor, '1');
+});
+
 test('event/message identity mismatch retains cursor', async t => {
-  const f = fixture(t); const event = f.event(); event.data.threadId = 'other@chatroom';
+  const f = fixture(t); const event = f.event(); f.message.threadId = 'other@chatroom';
   await assert.rejects(f.bridge.accept(event), /identity mismatch/); assert.equal(f.store.data.cursor, '0');
 });
 
@@ -151,4 +157,21 @@ test('Codex only accepts completed final JSON and denies tool requests', async (
   assert.deepEqual(await final, { reply: true, text: 'final' });
   const args = workerArgs(['private-server']); assert.ok(args.includes('mcp_servers.private-server.enabled=false'));
   assert.ok(args.includes('features.shell_tool=false')); assert.ok(args.includes('features.apps=false'));
+});
+
+test('Codex account preflight retries only a bounded read timeout, never auth rejection', async () => {
+  const client = new CodexClient(); let calls = 0;
+  client.request = async () => { calls++; if(calls < 3) throw Object.assign(Error('timeout'), { accountReadTimeout: true }); return { account: { type: 'chatgpt' } }; };
+  assert.deepEqual(await client.readAccount(), { account: { type: 'chatgpt' } }); assert.equal(calls, 3);
+  calls = 0; client.request = async () => { calls++; throw Object.assign(Error('still timed out'), { accountReadTimeout: true }); };
+  await assert.rejects(client.readAccount()); assert.equal(calls, 3);
+  calls = 0; client.request = async () => { calls++; throw Error('auth rejected'); };
+  await assert.rejects(client.readAccount(), /auth rejected/); assert.equal(calls, 1);
+});
+
+test('RPC diagnostics expose the failing method without copying private server error text', async () => {
+  const client = new CodexClient(); client.write = () => {}; client.child = { exitCode: null, killed: false };
+  const rejected = client.request('account/read', { refreshToken: false });
+  client.onMessage({ id: 1, error: { code: -32603, message: 'Private host timed out' } });
+  await assert.rejects(rejected, error => error.accountReadTimeout === true && error.code === 'CODEX_ACCOUNT_READ_TIMEOUT' && !error.message.includes('Private host'));
 });

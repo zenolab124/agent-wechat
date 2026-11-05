@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export function workerArgs(disabledMcp = []) {
   const settings = {
@@ -34,10 +35,19 @@ export class CodexClient {
     this.child.on('exit', () => this.failAll(Error('Codex exited')));
     await this.request('initialize', { clientInfo: { name: 'agent-wechat-codex', version: '0.1.0' }, capabilities: { experimentalApi: true } });
     this.write({ method: 'initialized', params: {} });
-    const auth = await this.request('account/read', { refreshToken: false });
+    const auth = await this.readAccount();
     if (!auth.account) throw Error('Codex needs its own login');
     const tools = await this.request('mcpServerStatus/list', {});
     if (tools.nextCursor || tools.data?.some(server => server.tools && Object.keys(server.tools).length)) throw Error('Disable every external MCP server for the chat worker');
+  }
+  async readAccount() {
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.request('account/read', { refreshToken: false }); }
+      catch (error) {
+        if (!error.accountReadTimeout || attempt >= 2) throw error;
+        await delay(250 * (attempt + 1));
+      }
+    }
   }
   write(message) { this.child.stdin.write(`${JSON.stringify(message)}\n`); }
   request(method, params) {
@@ -45,7 +55,7 @@ export class CodexClient {
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => { this.pending.delete(id); reject(Error(`Codex request timed out: ${method}`)); }, this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, method });
       this.write({ id, method, params });
     });
   }
@@ -53,7 +63,14 @@ export class CodexClient {
     const pending = this.pending.get(message.id);
     if (pending && !message.method) {
       clearTimeout(pending.timer); this.pending.delete(message.id);
-      if (message.error) pending.reject(Error(`Codex RPC error ${message.error.code}`)); else pending.resolve(message.result);
+      if (message.error) {
+        const error = Error(`Codex ${pending.method} RPC error ${message.error.code}`);
+        const text = String(message.error.message ?? '');
+        error.accountReadTimeout = pending.method === 'account/read' && message.error.code === -32603
+          && /timed out|timeout/i.test(text) && !/unauthorized|forbidden|expired|invalid.*(?:token|credential)|authentication failed/i.test(text);
+        error.code = error.accountReadTimeout ? 'CODEX_ACCOUNT_READ_TIMEOUT' : 'CODEX_RPC_FAILED';
+        pending.reject(error);
+      } else pending.resolve(message.result);
       return;
     }
     if (message.method && message.id !== undefined) {
