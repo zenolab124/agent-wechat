@@ -162,12 +162,13 @@ the checkout with these fields:
 | `mode` | Per-group `prefix` requires the configured text prefix; `selective` answers concrete questions, explicit requests or related follow-ups without an @mention, and defaults to silence for small talk/statements |
 | `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
 | `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
-| `cooldownMs` | Minimum interval between accepted replies per group; defaults to 10000 |
-| `callIntervalMs` | Minimum interval between model calls per group, including silent/failed calls; defaults to 30000 |
+| `cooldownMs` | Minimum interval between accepted replies per group; defaults to 10000, 0 disables this cooldown |
+| `callIntervalMs` | Minimum interval between model calls per group, including silent/failed calls; defaults to 30000, 0 disables this interval |
 | `maxCallsPerHour` | Maximum model calls per group in a rolling hour; defaults to 6, minimum 1 |
 | `batchWindowMs` | Collect consecutive messages until this much silence; defaults to 3000, 0 disables merging |
 | `batchMaxWaitMs` | Maximum collection time despite continuous traffic; defaults to 10000 |
 | `batchMaxMessages` | Maximum messages in one batch; defaults to 12, with an additional 8000-character input bound |
+| `pollIntervalMs` | Local event polling interval; defaults to 1000, range 100–10000 |
 | `codexBinary`, `model` | Optional executable/model overrides; omitted model uses the existing Codex default |
 | `codexHome` | Absolute dedicated Codex configuration directory; authenticate it through official Codex login with the keyring credential store |
 | `persistentConversations` | Defaults to false. With user consent, keep one Codex thread per group; requires `codexHome` |
@@ -261,9 +262,15 @@ An optional port overrides 16175. This separate read-only process shows each
 configured group's persisted conversation, searchable messages, raw user inputs
 and final output, configured prompts, cumulative group usage, limits and recent
 send receipts. It refreshes every five seconds while the page is visible. Usage
-can include earlier calls outside the displayed persistent thread. It reads the
-existing Codex history through the authenticated local App Server without a model
-turn, daemon token, worker lock or additional chat archive. The endpoint binds only
+and old task receipts can predate the current thread. New tasks separately record
+time waiting before the model, the model call, and local observation of an accepted
+send. Total latency starts at local message observation, not the phone's send time;
+old tasks without these measurements show unknown. Shorter batch/poll windows can
+reduce local waiting; model processing and network time remain variable. Set both
+`callIntervalMs` and `cooldownMs` to 0 to permit prompt follow-ups; hourly limits and
+same-group send recovery still apply.
+It reads existing Codex history through the authenticated local App Server without
+a model turn, daemon token, worker lock or additional chat archive. The endpoint binds only
 to IPv4 loopback, rejects cross-origin access and provides no send/edit controls.
 It does not expose hidden reasoning or platform instructions. Stop with Ctrl-C;
 the chat worker and WeChat connection remain independent.

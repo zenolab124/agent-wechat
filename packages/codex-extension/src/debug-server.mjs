@@ -7,10 +7,23 @@ import { GROUP_INSTRUCTIONS, OUTPUT_INSTRUCTIONS } from "./instructions.mjs";
 
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
-  ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/app.mjs", ["app.mjs", "text/javascript; charset=utf-8"]],
   ["/app.css", ["app.css", "text/css; charset=utf-8"]],
   ["/paper.css", ["styles/paper/paper.css", "text/css; charset=utf-8"]],
 ]);
+
+export function taskTiming(task) {
+  const elapsed = (end, start) =>
+    Number.isSafeInteger(end) && Number.isSafeInteger(start) && end >= start
+      ? end - start
+      : null;
+  return {
+    waitMs: elapsed(task.modelStartedAt, task.firstReceivedAt),
+    modelMs: elapsed(task.modelCompletedAt, task.modelStartedAt),
+    sendMs: elapsed(task.acceptedAt, task.sendStartedAt),
+    totalMs: elapsed(task.acceptedAt, task.firstReceivedAt),
+  };
+}
 
 export function debugHistory(history) {
   return history.turns.map((turn) => ({
@@ -128,6 +141,7 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
           callIntervalMs: config.callIntervalMs,
           maxCallsPerHour: config.maxCallsPerHour,
           batchWindowMs: config.batchWindowMs,
+          pollIntervalMs: config.pollIntervalMs,
         },
         tasks: Object.values(state.tasks)
           .filter((task) => task.threadId === group.id)
@@ -141,6 +155,7 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
             sendId: task.sendId ?? null,
             limitReason: task.limitReason ?? null,
             usageReported: task.usageReported ?? null,
+            timing: taskTiming(task),
           })),
       });
     } catch {

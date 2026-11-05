@@ -72,7 +72,7 @@ try {
           const page = await client.events(config.accountId, store.data.cursor, 100);
           for (const event of page.items) await bridge.accept(event);
           await bridge.drain();
-          await delay(1000, undefined, { signal: controller.signal }).catch(error => { if (error.name !== 'AbortError') throw error; });
+          await delay(config.pollIntervalMs, undefined, { signal: controller.signal }).catch(error => { if (error.name !== 'AbortError') throw error; });
         }
       }
     }

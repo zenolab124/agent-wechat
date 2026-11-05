@@ -4,7 +4,20 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { get } from "node:http";
-import { startDebugServer } from "../src/debug-server.mjs";
+import { startDebugServer, taskTiming } from "../src/debug-server.mjs";
+
+test("missing or invalid old timing remains unknown", () => {
+  assert.deepEqual(taskTiming({}), {
+    waitMs: null,
+    modelMs: null,
+    sendMs: null,
+    totalMs: null,
+  });
+  assert.equal(
+    taskTiming({ modelStartedAt: 100, modelCompletedAt: 99 }).modelMs,
+    null
+  );
+});
 
 test("debug server reads only configured group history without a model turn, write operation or credential response", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "wx-debug-"));
@@ -74,6 +87,7 @@ test("debug server reads only configured group history without a model turn, wri
     rmSync(directory, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(base + "/app.mjs")).status, 200);
   const groups = await (await fetch(base + "/api/groups")).json();
   const response = await fetch(
     base + "/api/conversation?group=" + groups.groups[0].key

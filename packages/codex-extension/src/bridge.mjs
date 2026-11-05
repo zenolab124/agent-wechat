@@ -20,9 +20,9 @@ export function validateConfig(value, { bootstrap = false } = {}) {
   if (value.persistentConversations !== undefined && typeof value.persistentConversations !== 'boolean') throw Error('persistentConversations must be boolean');
   if (value.codexHome !== undefined && (typeof value.codexHome !== 'string' || !isAbsolute(value.codexHome))) throw Error('codexHome must be absolute');
   if (value.persistentConversations && !value.codexHome) throw Error('Persistent conversations require an explicit isolated Codex profile');
-  if (value.cooldownMs !== undefined && (!Number.isSafeInteger(value.cooldownMs) || value.cooldownMs < 1000)) throw Error('cooldownMs must be at least 1000');
-  const settings = { callIntervalMs: 30000, maxCallsPerHour: 6, batchWindowMs: 3000, batchMaxWaitMs: 10000, batchMaxMessages: 12, ...value };
-  for (const [name, min, max] of [['callIntervalMs', 1000, 3600000], ['maxCallsPerHour', 1, 10000], ['batchWindowMs', 0, 30000], ['batchMaxWaitMs', 0, 60000], ['batchMaxMessages', 1, 32]]) {
+  if (value.cooldownMs !== undefined && (!Number.isSafeInteger(value.cooldownMs) || value.cooldownMs < 0)) throw Error('cooldownMs must be nonnegative');
+  const settings = { callIntervalMs: 30000, maxCallsPerHour: 6, batchWindowMs: 3000, batchMaxWaitMs: 10000, batchMaxMessages: 12, pollIntervalMs: 1000, ...value };
+  for (const [name, min, max] of [['callIntervalMs', 0, 3600000], ['maxCallsPerHour', 1, 10000], ['batchWindowMs', 0, 30000], ['batchMaxWaitMs', 0, 60000], ['batchMaxMessages', 1, 32], ['pollIntervalMs', 100, 10000]]) {
     if (!Number.isSafeInteger(settings[name]) || settings[name] < min || settings[name] > max) throw Error(`Invalid ${name}`);
   }
   if (settings.batchMaxWaitMs < settings.batchWindowMs) throw Error('batchMaxWaitMs must cover batchWindowMs');
@@ -106,6 +106,7 @@ export class Bridge {
     task.receiptState = intent.state;
     // Preserve any unrecognized/uncertain state; never resubmit it.
     if (intent.state === 'accepted') {
+      task.acceptedAt ??= this.now();
       task.state = 'done'; delete task.reply;
       this.store.data.lastReply[task.threadId] = this.now();
       if (!task.receiptCounted) { groupUsage(this.store.data, task.threadId).repliesAccepted++; task.receiptCounted = true; }
@@ -151,8 +152,8 @@ export class Bridge {
       const usage = groupUsage(this.store.data, task.threadId);
       usage.callTimes = usage.callTimes.filter(at => at > now - 3600000);
       const reason = usage.callTimes.length >= this.config.maxCallsPerHour ? 'hourly'
-        : usage.lastCallAt !== null && now - usage.lastCallAt < this.config.callIntervalMs ? 'interval'
-        : now - (this.store.data.lastReply[task.threadId] ?? 0) < this.config.cooldownMs ? 'reply-cooldown' : null;
+        : this.config.callIntervalMs > 0 && usage.lastCallAt !== null && now - usage.lastCallAt < this.config.callIntervalMs ? 'interval'
+        : this.config.cooldownMs > 0 && now - (this.store.data.lastReply[task.threadId] ?? 0) < this.config.cooldownMs ? 'reply-cooldown' : null;
       if (reason) {
         task.state = 'rate-limited'; task.limitReason = reason;
         usage.rateLimitedBatches++; usage.rateLimitedMessages += messages.length;
@@ -171,6 +172,7 @@ export class Bridge {
       if (!await this.inputs(task)) { this.ignore(task); return; }
       // Reserve one call and its whole batch before any model request can leave.
       task.state = 'generating'; usage.callsStarted++; usage.lastCallAt = this.now(); usage.callTimes.push(usage.lastCallAt);
+      task.modelStartedAt = usage.lastCallAt;
       this.store.save();
       let decision;
       try {
@@ -184,8 +186,10 @@ export class Bridge {
             this.store.save();
           },
         } : {});
+        task.modelCompletedAt = this.now();
         if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > 1600)) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
       } catch (error) {
+        task.modelCompletedAt = this.now();
         recordResult(this.store.data, task, error.usage, 'failed'); task.state = 'generation-failed'; this.store.save();
         this.report({ event: 'model.failed' }); throw error;
       }
@@ -199,7 +203,7 @@ export class Bridge {
     const recheck = await this.inputs(task);
     this.signal?.throwIfAborted();
     if (!recheck) { this.ignore(task); return; }
-    task.state = 'submitting'; this.store.save();
+    task.state = 'submitting'; task.sendStartedAt ??= this.now(); this.store.save();
     try { await this.settle(task, await this.client.sendText(this.config.accountId, task.threadId, task.reply, task.key)); }
     catch { task.state = 'unknown'; this.store.save(); this.report({ event: 'reply.unknown' }); }
     // Derive the optional view after saving generation and send state. A viewer

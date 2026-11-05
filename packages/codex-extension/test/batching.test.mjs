@@ -198,3 +198,24 @@ test('v3 refuses a thread reused across groups and an invalid persistent-profile
   f.data.conversations = { 'a@chatroom': { threadId: 'shared', profile: '/isolated', seenMessageIds: [] }, 'b@chatroom': { threadId: 'shared', profile: '/isolated', seenMessageIds: [] } };
   f.save(); assert.throws(() => f.restart(), /multiple groups/);
 });
+
+test('zero call/reply intervals permit immediate follow-ups while preserving hourly caps', async t => {
+  const f = harness(t, { callIntervalMs: 0, cooldownMs: 0, batchWindowMs: 0, batchMaxWaitMs: 0, maxCallsPerHour: 2 });
+  await f.add('first'); await f.bridge.drain();
+  f.advance(100); await f.add('followup'); await f.bridge.drain();
+  assert.equal(f.generations.length, 2); assert.equal(f.sends.length, 2);
+  f.advance(100); await f.add('third'); await f.bridge.drain();
+  assert.equal(f.generations.length, 2); assert.equal(Object.values(f.data.tasks).at(-1).limitReason, 'hourly');
+  for (const patch of [{ pollIntervalMs: 0 }, { pollIntervalMs: 99 }, { pollIntervalMs: 10001 }, { cooldownMs: -1 }]) assert.throws(() => validateConfig({ ...f.config, ...patch }));
+});
+
+test('operational timing separates merge wait, model call and accepted send without inventing old measurements', async t => {
+  const f = harness(t); const send = f.client.sendText;
+  f.codex.answer = async () => { f.advance(5000); return { reply: true, text: 'timed reply', usage: sample }; };
+  f.client.sendText = async (...args) => { f.advance(200); return send(...args); };
+  const received = f.now; await f.add('timed'); f.advance(3000); await f.bridge.drain();
+  const task = Object.values(f.data.tasks)[0];
+  assert.equal(task.modelStartedAt - received, 3000); assert.equal(task.modelCompletedAt - task.modelStartedAt, 5000);
+  assert.equal(task.acceptedAt - task.sendStartedAt, 200); assert.equal(task.acceptedAt - received, 8200);
+  f.restart(); assert.equal(Object.values(f.data.tasks)[0].acceptedAt, task.acceptedAt);
+});
