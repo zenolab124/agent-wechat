@@ -13,9 +13,9 @@ if (!['doctor', 'run', 'codex-test'].includes(command) || !configPath) {
 }
 let store; let codex;
 const controller = new AbortController();
-for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => controller.abort());
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { controller.abort(); codex?.close(); });
 try {
-  const config = validateConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')));
+  const config = validateConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')), { bootstrap: command !== 'run' });
   const token = process.env.AGENT_WECHAT_TOKEN;
   if (!token) throw Error('Provide the daemon token privately through AGENT_WECHAT_TOKEN');
   delete process.env.AGENT_WECHAT_TOKEN;
@@ -34,7 +34,7 @@ try {
       console.log(JSON.stringify({ event: 'codex.test', answer }));
     } else {
       store = new StateStore(config.stateDir, { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername });
-      const bridge = new Bridge({ client, codex, store, config, report: value => console.log(JSON.stringify(value)) });
+      const bridge = new Bridge({ client, codex, store, config, signal: controller.signal, report: value => console.log(JSON.stringify(value)) });
       await bridge.identity();
       console.log(JSON.stringify({ event: 'worker.ready', sendEnabled: config.sendEnabled === true }));
       while (!controller.signal.aborted) {
@@ -48,5 +48,5 @@ try {
   }
 } catch (error) {
   // Do not mirror upstream error bodies, messages or credentials into service logs.
-  console.error(JSON.stringify({ event: 'worker.stopped', error: error.name, code: error.code ?? null })); process.exitCode = 1;
+  console.error(JSON.stringify({ event: 'worker.stopped', error: error.name, code: error.code ?? null })); process.exitCode = controller.signal.aborted ? 0 : 1;
 } finally { codex?.close(); store?.close(); }

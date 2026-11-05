@@ -82,6 +82,13 @@ test('message recalled during generation is not sent', async t => {
   await f.bridge.accept(f.event()); await f.bridge.drain(); assert.equal(f.calls.length, 0);
 });
 
+test('stopping the worker during generation prevents a subsequent send', async t => {
+  const f = fixture(t); const controller = new AbortController(); f.bridge.signal = controller.signal;
+  f.codex.answer = async () => { controller.abort(); return { reply: true, text: 'must not send after stop' }; };
+  await f.bridge.accept(f.event()); await assert.rejects(f.bridge.drain(), { name: 'AbortError' });
+  assert.equal(f.calls.length, 0);
+});
+
 test('unknown POST survives restart and missing lookup never causes a second POST or regeneration', async t => {
   const f = fixture(t); f.client.sendText = async (...args) => { f.calls.push(args); throw Error('connection reset after remote acceptance'); };
   f.client.sendByKey = async () => { throw Error('not found'); };
@@ -129,6 +136,9 @@ test('worker lock prevents a second owner; corrupt state and different account a
 test('remote URLs, wildcard sender and ambiguous group policies are rejected', t => {
   const f = fixture(t);
   for (const mutation of [{ baseUrl: 'http://example.com' }, { groups: [] }, { groups: [{ id: 'test@chatroom', senders: ['*'], mode: 'selective' }] }, { sendEnabled: 'true' }]) assert.throws(() => validateConfig({ ...f.config, ...mutation }));
+  const bootstrap = { baseUrl: f.config.baseUrl, accountId: f.config.accountId, groups: [] };
+  assert.doesNotThrow(() => validateConfig(bootstrap, { bootstrap: true }));
+  assert.throws(() => validateConfig(bootstrap));
 });
 
 test('Codex only accepts completed final JSON and denies tool requests', async () => {

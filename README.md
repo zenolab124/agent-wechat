@@ -176,6 +176,8 @@ do not put it in the JSON config or commit it. `doctor` is read-only. `codex-tes
 checks model handoff without sending to WeChat. Worker logs contain status events,
 not message bodies. Start with `sendEnabled: false`, then confirm the exact group,
 sender and test message before enabling live replies.
+Before QR login, `doctor` and `codex-test` also accept an unconfigured identity
+with `groups: []`; `run` always requires the pinned identity and explicit groups.
 
 Only fresh committed incoming text is eligible; self messages, catch-up/imports,
 old messages, recalls and other senders/groups are ignored. History is fetched

@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 
-export function validateConfig(value) {
+export function validateConfig(value, { bootstrap = false } = {}) {
   const url = new URL(value.baseUrl);
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
     || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw Error('Use an explicit loopback daemon URL');
-  if (typeof value.accountId !== 'string' || !value.accountId || typeof value.ownUsername !== 'string' || !value.ownUsername) throw Error('Pin the daemon account and signed-in WeChat identity');
-  if (!Array.isArray(value.groups) || !value.groups.length) throw Error('At least one explicit test group is required');
+  if (typeof value.accountId !== 'string' || !value.accountId) throw Error('Pin the daemon account');
+  if (!bootstrap && (typeof value.ownUsername !== 'string' || !value.ownUsername)) throw Error('Pin the signed-in WeChat identity');
+  if (!Array.isArray(value.groups) || !bootstrap && !value.groups.length) throw Error('At least one explicit test group is required');
   const seen = new Set();
   for (const group of value.groups) {
     if (typeof group.id !== 'string' || !group.id.endsWith('@chatroom') || seen.has(group.id)
@@ -24,11 +25,13 @@ export function replyKey(accountId, messageId, version) {
 }
 
 export class Bridge {
-  constructor({ client, codex, store, config, report = () => {} }) {
-    Object.assign(this, { client, codex, store, config: validateConfig(config), report });
+  constructor({ client, codex, store, config, report = () => {}, signal }) {
+    Object.assign(this, { client, codex, store, config: validateConfig(config), report, signal });
   }
   async identity() {
+    this.signal?.throwIfAborted();
     const account = await this.client.account(this.config.accountId);
+    this.signal?.throwIfAborted();
     if (account.id !== this.config.accountId || account.authenticated !== true || account.ownUsername !== this.config.ownUsername) throw Error('WeChat account is signed out or its identity changed');
   }
   policy(message) {
@@ -104,6 +107,7 @@ export class Bridge {
     if (!this.config.sendEnabled) { task.state = 'dry-run'; delete task.reply; this.store.save(); this.report({ event: 'reply.dry-run' }); return; }
     await this.identity();
     const recheck = await this.client.message(this.config.accountId, task.messageId);
+    this.signal?.throwIfAborted();
     if (!this.policy(recheck) || recheck.id !== task.messageId || recheck.version !== task.version || recheck.threadId !== task.threadId) { task.state = 'ignored'; delete task.reply; this.store.save(); return; }
     task.state = 'submitting'; this.store.save();
     try { await this.settle(task, await this.client.sendText(this.config.accountId, task.threadId, task.reply, task.key)); }
