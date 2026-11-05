@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { Bridge, validateConfig } from '../src/bridge.mjs';
 import { StateStore } from '../src/state.mjs';
 import { CodexClient } from '../src/codex.mjs';
@@ -125,6 +126,8 @@ test('failed and interrupted inference consume one quota reservation; missing us
   assert.equal(g.data.usage.groups['a@chatroom'].unreportedCalls, 1);
   const h = harness(t); h.codex.answer = async () => ({ reply: false }); await h.add('one'); h.advance(3000); await h.bridge.drain();
   assert.equal(h.data.usage.groups['a@chatroom'].reportedCalls, 0); assert.equal(h.data.usage.groups['a@chatroom'].unreportedCalls, 1);
+  const report = usageSnapshot(h.data, h.now).groups[0];
+  assert.equal(report.tokenUsageComplete, false); assert.equal(report.unknownUsageCalls, 1);
 });
 
 test('usage notifications are snapshots, not deltas; model JSON cannot forge usage', async () => {
@@ -154,4 +157,15 @@ test('invalid rate and batching configuration is rejected rather than disabling 
 test('corrupted quota state is rejected instead of silently resetting usage', t => {
   const f = harness(t); const usage = groupUsage(f.data, 'a@chatroom'); usage.completedCalls = 1; f.save();
   assert.throws(() => f.restart(), /Inconsistent usage journal/);
+});
+
+test('local usage command reads a live locked journal without a daemon token or model process', async t => {
+  const f = harness(t, { baseUrl: 'http://127.0.0.1:1', codexBinary: '/nonexistent-codex' });
+  await f.add('one'); f.advance(3000); await f.bridge.drain();
+  const config = join(f.directory, 'config.json'); writeFileSync(config, JSON.stringify({ ...f.config, stateDir: f.directory }));
+  const result = spawnSync(process.execPath, [new URL('../src/cli.mjs', import.meta.url).pathname, 'usage', config], { encoding: 'utf8', env: {} });
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout).groups[0];
+  assert.equal(report.callsStarted, 1); assert.equal(report.reportedTokens.totalTokens, 120); assert.equal(report.tokenUsageComplete, true);
+  assert.equal(JSON.parse(readFileSync(join(f.directory, 'worker.lock'))).pid, process.pid);
 });
