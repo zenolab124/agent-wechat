@@ -142,7 +142,7 @@ experimental. See the [native profile guide](packages/native-client-rust/README.
 This fork adds `packages/codex-extension`, a source-run workspace package for a
 local Codex App Server. It reuses the native SDK and daemon without OpenClaw.
 Node 24.22.1 or newer and an already authenticated `codex` executable are required.
-The native transport remains pinned to upstream v1.4.0; a fresh profile on macOS
+The native transport uses upstream v1.4.0 plus the included sticker-source fix; a fresh profile on macOS
 still needs real account and group acceptance. No account-safety guarantee is made.
 The phone can identify this connection as Linux WeChat because the backend uses
 the Linux client identity, even when its executable runs on macOS. The worker
@@ -277,6 +277,10 @@ before media preparation or inference. The daemon's own media cache policy is
 independent. Source bytes and native previews must match their account, message,
 size and SHA-256 metadata. Each visual can wait up to eight seconds for availability;
 missing/expired/oversized content is marked unreadable, never described as seen.
+Unsupported sticker hosts are reported as `unsupported-source`. Native sticker
+retrieval accepts only the exact Tencent hosts listed in its validator; the
+`vweixinf.tc.qq.com` addition requires the updated native executable, not just a
+restart of the source-run Codex worker.
 The extension accepts at most 16 MiB per source and 24 megapixels, makes a JPEG
 preview up to 1600 pixels per side and 5 MiB, and sends at most four images per
 model batch. GIF/animated stickers use the first frame; native still previews

@@ -30,11 +30,15 @@ pub(super) fn public_ip(ip: IpAddr) -> bool {
     }
 }
 /// Sticker bytes come from Tencent CDN hosts. Classic stored and pack emoji
-/// carry a `wxapp.tc.qq.com` source, while shared stickers use
-/// `snsvideo.c2c.wechat.com`; both are reachable directly, unlike the
+/// carry a `wxapp.tc.qq.com` or `vweixinf.tc.qq.com` source, while shared
+/// stickers use `snsvideo.c2c.wechat.com`; these are reachable directly, unlike the
 /// encrypted attachment channels. Any other host stays refused so a crafted
 /// message cannot turn this into an arbitrary fetch.
-pub const STICKER_HOSTS: &[&str] = &["snsvideo.c2c.wechat.com", "wxapp.tc.qq.com"];
+pub const STICKER_HOSTS: &[&str] = &[
+    "snsvideo.c2c.wechat.com",
+    "wxapp.tc.qq.com",
+    "vweixinf.tc.qq.com",
+];
 
 pub fn validate_sticker_url(value: &str) -> Result<reqwest::Url> {
     ensure!(
@@ -157,6 +161,8 @@ mod tests {
             "https://snsvideo.c2c.wechat.com/x",
             "http://wxapp.tc.qq.com/275/20304/stodownload?m=318341a160b08b297892a0e5741cc553&filekey=3035020101042130&bizid=1023",
             "https://wxapp.tc.qq.com:443/x",
+            "http://vweixinf.tc.qq.com/275/20304/stodownload?m=synthetic&filekey=synthetic",
+            "https://vweixinf.tc.qq.com:443/x",
         ] {
             assert!(validate_sticker_url(u).is_ok(), "{u}");
         }
@@ -165,6 +171,11 @@ mod tests {
             "https://wxapp.tc.qq.com.cn/x",
             "http://evil.tc.qq.com/x",
             "http://wxapp.tc.qq.com:8080/x",
+            "https://vweixinf.tc.qq.com.evil/x",
+            "https://vweixinf.tc.qq.com.cn/x",
+            "https://user@vweixinf.tc.qq.com/x",
+            "http://vweixinf.tc.qq.com:8080/x",
+            "https://vweixinf.tc.qq.com/x#fragment",
         ] {
             assert!(validate_sticker_url(u).is_err(), "{u}");
         }

@@ -27,6 +27,18 @@ const gif = readFileSync(
 );
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+test("an unsupported native sticker source remains distinguishable without leaking its signed URL", async (t) => {
+  const f = fixture(t);
+  f.client.mediaAssets = async () => {
+    throw Object.assign(Error("private signed URL must not escape"), {
+      code: "sticker_source_not_allowed",
+    });
+  };
+  assert.deepEqual(await prepareVisual(f.args), {
+    status: "unsupported-source",
+  });
+});
+
 function fixture(t) {
   const stateDir = mkdtempSync(join(tmpdir(), "wx-visual-"));
   t.after(() => rmSync(stateDir, { recursive: true, force: true }));

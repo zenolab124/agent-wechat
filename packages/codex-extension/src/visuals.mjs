@@ -85,6 +85,7 @@ export async function prepareVisual({ client, config, message, signal, assertCur
   } catch (error) {
     signal?.throwIfAborted();
     if (error.code === 'VISUAL_INTEGRITY') throw error;
+    if (error.code === 'sticker_source_not_allowed') return { status: 'unsupported-source' };
     return { status: localSignal.aborted ? 'pending' : 'unavailable' };
   }
 }
