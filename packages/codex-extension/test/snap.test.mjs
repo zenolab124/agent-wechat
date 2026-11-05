@@ -8,6 +8,7 @@ import {
   createSnapLookup,
   projectCards,
   projectOta,
+  recentCards,
   validateLookups,
   validateSnapConfig,
 } from "../src/snap.mjs";
@@ -311,4 +312,76 @@ test("missing or corrupt local deck library keeps card lookup usable and never f
     { imageDeckAllowed: true, imageDeckIndex: 2 }
   );
   assert.equal(denied.status, "denied");
+});
+
+test("recent cards use only known elapsed regional release dates, retain ties deterministically and exclude future/token rows", () => {
+  const rows = [
+    { key: "Missing", collectible: true, firstReleaseDate: null },
+    { key: "Future", collectible: true, firstReleaseDate: 2000 },
+    { key: "Token", collectible: false, firstReleaseDate: 950 },
+    { key: "Older", collectible: true, firstReleaseDate: 100 },
+    { key: "B", collectible: true, firstReleaseDate: 900 },
+    { key: "A", collectible: true, firstReleaseDate: 900 },
+  ];
+  const result = recentCards(rows, 1000, 3);
+  assert.deepEqual(
+    result.cards.map((row) => row.key),
+    ["A", "B", "Older"]
+  );
+  assert.equal(result.unknownDateCount, 1);
+  validateLookups([{ kind: "recent_cards", region: "cn", limit: 1 }]);
+  for (const query of [
+    { kind: "recent_cards", region: "cn", limit: 0 },
+    { kind: "recent_cards", region: "other" },
+    { kind: "recent_cards", region: "cn", url: "https://attacker.test" },
+  ])
+    assert.throws(() => validateLookups([query]));
+});
+
+test("regional recent-card lookup is offline and supports global without accessing CN records", async () => {
+  const f = fixture();
+  const result = await f.lookup.lookup([
+    { kind: "recent_cards", region: "global" },
+  ]);
+  assert.equal(result[0].status, "ok");
+  assert.equal(result[0].offline, true);
+  assert.equal(result[0].region, "global");
+  assert.equal(result[0].unknownDateCount, 1);
+  assert.deepEqual(result[0].cards, []);
+});
+
+test("optional knowledge integrity failure cannot borrow another region or break card facts", async () => {
+  const f = fixture(),
+    snapshot = JSON.parse(f.files["snapshot.json"]);
+  snapshot.knowledge = {
+    locations: {
+      cn: {
+        file: "locations-cn.json",
+        sha256: "0".repeat(64),
+        count: 1,
+        observedAt: "2026-01-01T00:00:00Z",
+      },
+    },
+    rules: { file: "rules-cn.json", sha256: "0".repeat(64), count: 1 },
+  };
+  f.files["locations-cn.json"] = "{}";
+  f.files["rules-cn.json"] = "{}";
+  f.files["snapshot.json"] = JSON.stringify(snapshot);
+  const results = await f.lookup.lookup([
+    { kind: "location", region: "cn", query: "地点" },
+    { kind: "location", region: "global", query: "地点" },
+    { kind: "rules", region: "cn", query: "技能" },
+    query(),
+  ]);
+  assert.deepEqual(
+    results.map((r) => r.status),
+    ["unavailable", "unavailable", "unavailable", "ok"]
+  );
+  assert.ok(results.every((r) => r.offline));
+  const before = f.reads.length;
+  const [globalRules] = await f.lookup.lookup([
+    { kind: "rules", region: "global", query: "技能" },
+  ]);
+  assert.equal(globalRules.status, "unsupported");
+  assert.equal(f.reads.length, before);
 });

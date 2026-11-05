@@ -13,6 +13,14 @@ import {
   imageDeckCode,
   queryDecks,
 } from "./decks.mjs";
+import {
+  validateKnowledgeLookup,
+  parseLocations,
+  parseLocationSchedule,
+  parseRules,
+  queryLocations,
+  queryRules,
+} from "./knowledge.mjs";
 
 const LIMIT = 32 * 1024 * 1024;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -57,6 +65,25 @@ export function validateLookups(value) {
   for (const item of value) {
     if (
       item &&
+      ["location", "location_schedule", "rules"].includes(item.kind)
+    ) {
+      validateKnowledgeLookup(item);
+      continue;
+    }
+    if (item?.kind === "recent_cards") {
+      if (
+        !["cn", "global"].includes(item.region) ||
+        Object.keys(item).some(
+          (key) => !["kind", "region", "limit"].includes(key)
+        ) ||
+        (item.limit !== undefined &&
+          (!Number.isInteger(item.limit) || item.limit < 1 || item.limit > 12))
+      )
+        throw Error("Invalid recent card lookup");
+      continue;
+    }
+    if (
+      item &&
       ["decks", "decode_deck", "encode_image_deck"].includes(item.kind)
     ) {
       validateDeckLookup(item);
@@ -78,6 +105,30 @@ export function validateLookups(value) {
       throw Error("Invalid SNAP lookup");
   }
   return value;
+}
+
+export function recentCards(cards, now = Date.now(), limit = 5) {
+  const collectible = cards.filter((card) => card.collectible);
+  const dated = collectible
+    .filter(
+      (card) =>
+        Number.isFinite(card.firstReleaseDate) &&
+        card.firstReleaseDate > 0 &&
+        card.firstReleaseDate <= now
+    )
+    .sort(
+      (a, b) =>
+        b.firstReleaseDate - a.firstReleaseDate || a.key.localeCompare(b.key)
+    );
+  return {
+    cards: dated.slice(0, limit),
+    datedCount: dated.length,
+    unknownDateCount: collectible.filter(
+      (card) =>
+        !Number.isFinite(card.firstReleaseDate) || card.firstReleaseDate <= 0
+    ).length,
+    note: "仅按所选服区本地目录中日期已到的卡牌排序；缺失日期不猜测，不包含未来日期。这不是实时服务器上架验证。",
+  };
 }
 
 export function projectCards(records, region) {
@@ -223,6 +274,7 @@ export function createSnapLookup({
 } = {}) {
   validateSnapConfig(snap);
   let catalog, ota, decks, deckSource;
+  const knowledge = { locations: {}, schedules: {} };
   function load() {
     if (catalog) return catalog;
     const snapshot = JSON.parse(readFile("snapshot.json"));
@@ -315,6 +367,45 @@ export function createSnapLookup({
         decks = undefined;
       }
     }
+    for (const region of ["cn", "global"]) {
+      for (const kind of ["locations", "schedules"]) {
+        const ref = snapshot.knowledge?.[kind]?.[region];
+        if (!ref) continue;
+        try {
+          if (!sha(ref.sha256) || !Number.isFinite(Date.parse(ref.observedAt)))
+            throw Error("Invalid knowledge reference");
+          const bytes = readFile(ref.file);
+          if (hash(bytes) !== ref.sha256)
+            throw Error("Knowledge integrity failed");
+          const data =
+            kind === "locations"
+              ? parseLocations(JSON.parse(bytes), region)
+              : parseLocationSchedule(JSON.parse(bytes), region);
+          if (
+            (kind === "locations" ? data.length : data.entries.length) !==
+            ref.count
+          )
+            throw Error("Knowledge count mismatch");
+          knowledge[kind][region] = { data, observedAt: ref.observedAt };
+        } catch {
+          /* Optional invalid datasets remain unavailable, without online fallback. */
+        }
+      }
+    }
+    const ruleRef = snapshot.knowledge?.rules;
+    if (ruleRef)
+      try {
+        if (!sha(ruleRef.sha256)) throw Error("Invalid rule reference");
+        const bytes = readFile(ruleRef.file);
+        if (hash(bytes) !== ruleRef.sha256)
+          throw Error("Rule integrity failed");
+        const data = parseRules(JSON.parse(bytes));
+        if (data.entries.length !== ruleRef.count)
+          throw Error("Rule count mismatch");
+        knowledge.rules = data;
+      } catch {
+        /* No use of unverified rule data. */
+      }
     catalog = {
       releaseId: manifest.releaseId,
       generatedAt: manifest.generatedAt,
@@ -332,7 +423,14 @@ export function createSnapLookup({
         try {
           if (
             query.region === "global" &&
-            !["card", "encode_image_deck", "decode_deck"].includes(query.kind)
+            ![
+              "card",
+              "recent_cards",
+              "location",
+              "location_schedule",
+              "encode_image_deck",
+              "decode_deck",
+            ].includes(query.kind)
           )
             return {
               query,
@@ -349,6 +447,62 @@ export function createSnapLookup({
             catalogSource: source.source,
             offline: true,
           };
+          if (query.kind === "rules")
+            return {
+              query,
+              ...metadata,
+              ...(knowledge.rules
+                ? queryRules(query, knowledge.rules)
+                : {
+                    status: "unavailable",
+                    reason:
+                      "本机未安装通过校验的规则文档资料；不能凭卡面文字推定结算。",
+                  }),
+            };
+          if (query.kind === "location" || query.kind === "location_schedule") {
+            const data = knowledge.locations[query.region],
+              schedule = knowledge.schedules[query.region];
+            if (!data)
+              return {
+                query,
+                ...metadata,
+                status: "unavailable",
+                reason: "本机地点资料缺失或校验失败，不联网补值。",
+              };
+            return {
+              query,
+              ...metadata,
+              locationSource: { observedAt: data.observedAt, offline: true },
+              ...(schedule
+                ? {
+                    scheduleSource: {
+                      observedAt: schedule.observedAt,
+                      offline: true,
+                    },
+                  }
+                : {}),
+              ...queryLocations(query, data.data, schedule?.data, now()),
+            };
+          }
+          if (query.kind === "recent_cards") {
+            const recent = recentCards(regional, now(), query.limit ?? 5);
+            return {
+              query,
+              ...metadata,
+              status: "ok",
+              asOf: new Date(now()).toISOString(),
+              ...recent,
+              cards: recent.cards.map((card) => ({
+                ...card,
+                localDeckCount:
+                  query.region === "cn" && decks
+                    ? decks.filter((deck) =>
+                        deck.card_def_ids.includes(card.key)
+                      ).length
+                    : null,
+              })),
+            };
+          }
           if (query.kind === "encode_image_deck")
             return {
               query,

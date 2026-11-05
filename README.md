@@ -366,6 +366,24 @@ this preserves history when resume parameters alone do not replace earlier
 instructions. The debug timeline shows query stages, selected records and source
 timestamps. These lookups do not enable arbitrary tools or network requests.
 
+Local knowledge data can add `location`, `location_schedule`, `rules` and
+`recent_cards` lookups. `snapshot.json.knowledge.locations` and `.schedules` map
+`cn`/`global` to `{ file, sha256, count, observedAt }`; each file retains its own
+region header and schema. `.knowledge.rules` holds `{ file, sha256, count }` for
+CN document excerpts with their version, source title/section, preparation date,
+`evidenceTier: "document-reference-only"` and `macEngineVerified: false`.
+Missing or corrupt optional data is unavailable without an online fallback.
+
+Location text does not prove current availability. Unresolved template parameters
+stay unknown; schedule windows are reported as active/upcoming only within the
+stored dates, retaining their provisional status and observation time. Rule
+answers cite the versioned document and do not claim a fresh client experiment
+or Mac-engine verification. No simulator or judge is connected. Unrecorded
+interactions remain unverified. `recent_cards` orders regional collectible cards
+by known, elapsed release dates; missing/future dates are not guessed. Local CN
+deck counts can help select a matching deck without mistaking deck update time
+for a card's release date.
+
 Optional local deck data is installed in the same snapshot directory as
 `decks.json`, with `snapshot.json.decks` containing the approved public file's
 `region: "cn"`, `sha256`, `count` and `generatedAt`. The worker verifies the full

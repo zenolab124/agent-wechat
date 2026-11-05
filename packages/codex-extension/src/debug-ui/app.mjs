@@ -34,6 +34,11 @@ const time = (value) => {
     : "";
 };
 const lookupLabel = (query) => {
+  if (query?.kind === "recent_cards") return "按上线日期查询近期卡牌";
+  if (query?.kind === "location") return `地点：${query.query ?? ""}`;
+  if (query?.kind === "location_schedule")
+    return `地点排期${query.query ? `：${query.query}` : ""}`;
+  if (query?.kind === "rules") return `规则文档：${query.query ?? ""}`;
   if (query?.kind === "decks")
     return `卡组搜索${query.query ? `：${query.query}` : ""}${
       query.featured ? " · 天梯精选" : ""
