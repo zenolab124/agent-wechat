@@ -63,7 +63,7 @@ export function debugHistory(history, directory) {
   }));
 }
 
-export async function startDebugServer({ config, codex, port = 16175 }) {
+export async function startDebugServer({ config, codex, localDataStatus, port = 16175 }) {
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw Error("Invalid debug port");
   const groups = config.groups.map((group, index) => ({
@@ -174,14 +174,16 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
         allowedImages.add(id);
       return send(200, {
         group,
+        localData:localDataStatus?.()??null,
+        persona:config.persona??null,
         threadId: conversation?.threadId ?? null,
         model: config.model ?? history?.thread.model ?? null,
         updatedAt: new Date().toISOString(),
         usageSince: state.usage.since,
         turns,
         instructions: [
-          groupInstructions(!!config.snap),
-          outputInstructions(config.model, config.snap?.defaultRegion),
+          groupInstructions(!!config.snap,config.persona),
+          outputInstructions(config.model, config.snap?.defaultRegion,!!config.engine),
         ],
         usage:
           usageSnapshot(state).groups.find(
@@ -218,6 +220,8 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
             replySuppressed: task.replySuppressed === true,
             modelRequests: task.modelRequests ?? null,
             verifiedDeckCode: task.verifiedDeckCode === true,
+            engineOperations: task.engineOperations ?? [],
+            ...(task.engineOperations?.length ? {deliveryText:task.reply??null} : {}),
           })),
       });
     } catch {

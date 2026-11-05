@@ -141,3 +141,10 @@ test('deck code output rejects model-invented codes and accepts only locally iss
   const result=await c.answer({mode:'selective'});assert.equal(result.verifiedDeckCode===true,trusted);assert.equal(result.text.includes(code),trusted);
  }
 });
+
+test('engine scope comes only from transport options and complete preview cannot be abbreviated by the model',async()=>{
+ const calls=[],preview='完整核对\n'+('条件。'.repeat(600))+'\n确认推演 '+ 'a'.repeat(16);let round=0;
+ const c=new CodexClient({timeoutMs:1000,snapLookup:{defaultRegion:'cn',engineEnabled:true,lookup:async(_q,options)=>{calls.push(options);return[{query:{kind:'engine_prepare',region:'cn'},status:'awaiting-confirmation',id:'a'.repeat(16),replyText:preview,version:'cn-test'}];}}});const injected=[];
+ c.request=async(method,params)=>{if(method==='thread/start')return{thread:{id:'t'}};if(method==='thread/inject_items')injected.push(params);if(method==='turn/start'){const turnId=String(++round);c.onMessage({method:'item/completed',params:{threadId:'t',turnId,item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify(round===1?{lookup:[{kind:'engine_prepare',region:'cn',example:'ironheart'}]}:{reply:true,text:'模型省略了大部分条件'})}}});c.onMessage({method:'turn/completed',params:{threadId:'t',turn:{id:turnId,status:'completed'}}});return{turn:{id:turnId}}}return{}};
+ const scope={accountId:'real',groupId:'same',messages:[{sender:'original',text:'准备示例'}]};const result=await c.answer({scope:{accountId:'forged'},messages:[]},{scope});assert.deepEqual(calls[0].scope,scope);assert.equal(result.text,preview);assert.equal(result.enginePreview,true);assert.equal(result.engineOperations[0].status,'awaiting-confirmation');assert.equal(JSON.parse(injected[0].items[0].content[0].text).snapLookupResults[0].replyText,preview);assert.equal(injected[0].items[1].role,'assistant');assert.equal(result.modelRequests,1);
+});

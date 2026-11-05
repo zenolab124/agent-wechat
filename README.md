@@ -346,8 +346,8 @@ reference with `region: "cn"`, `source: "snap-card-changes"`, `sha256` and `coun
 `ota.json` contains `region`, `source`, `fetchedAt` and the exported `items` array.
 Obtain that approved-record export separately, with the data owner's permission;
 public announcement drafts are not a substitute for approved records. Keep all
-paths and data outside the checkout. Install a new complete directory and restart
-the worker to update it; do not overwrite files in a running snapshot.
+paths and data outside the checkout. Use `install-data` below to install a new
+complete directory; do not overwrite files in a running snapshot.
 
 The worker verifies the local manifest and all three V3 artifacts before using
 card facts, and verifies the separate OTA hash and count. It selects only the
@@ -378,11 +378,68 @@ Location text does not prove current availability. Unresolved template parameter
 stay unknown; schedule windows are reported as active/upcoming only within the
 stored dates, retaining their provisional status and observation time. Rule
 answers cite the versioned document and do not claim a fresh client experiment
-or Mac-engine verification. No simulator or judge is connected. Unrecorded
-interactions remain unverified. `recent_cards` orders regional collectible cards
+or Mac-engine verification. The optional engine below provides a separate
+simulation result; document lookups retain their own evidence tier. No client
+judge is connected. Unrecorded interactions remain unverified. `recent_cards` orders regional collectible cards
 by known, elapsed release dates; missing/future dates are not guessed. Local CN
 deck counts can help select a matching deck without mistaking deck update time
 for a card's release date.
+
+For an offline update, prepare a complete local directory, then run:
+
+```sh
+node packages/codex-extension/src/cli.mjs data-status /private/config.json
+node packages/codex-extension/src/cli.mjs install-data /private/config.json /private/prepared-data
+```
+
+These commands need neither a WeChat token nor a model call. Installation copies
+only referenced JSON files to a new private directory, checks every declared
+artifact and preserves the previous configuration. An update cannot silently
+remove an installed data capability. The worker switches at its next batch
+boundary after validating the new directory; an answer already in progress keeps
+one source throughout. Invalid packages leave the previous source active. This
+is a local-file installation channel, not a background downloader or database
+export. The underlying snapshot dates stay unchanged when a package is copied.
+
+Optional `engine` configuration uses absolute `binary`, `content`, and
+`verification` paths for a separately installed macOS arm64 Rust rules CLI. The
+verification receipt binds the binary and content SHA-256 to their CN version,
+records successful Rust workspace tests and an equal/expected portability case
+count with zero differences. The worker checks these identities before each
+operation. Prepare and sign new binaries outside the worker, rerun their matching
+portability corpus, then restart the worker with the new paths; retain the same
+state directory and Codex profile. Updating data alone does not update engine
+rules, and older proposals cannot execute against a changed engine.
+
+The model can query `engine_status` and `engine_catalog`, then use
+`engine_prepare` with a complete `snap-position/v1` position. A prepared task does
+not run the engine: the sender first receives the complete conditions and a
+`确认推演 <id>` phrase. Only a new exact confirmation by that sender in the same
+account and group can execute it. Quote excerpts and model-provided sender names
+do not grant confirmation. The program preserves the canonical preview even if
+the model shortens it. Missing history stays unknown, unsupported positions have
+no result, and failures or interrupted jobs do not run again automatically.
+
+Results show the version, sampled outcomes, first-seed changes and any declared
+approximations. This is a Rust prediction under confirmed assumptions, not a
+fresh client experiment or a real-match win rate. The first release simulates
+specified actions; it does not search for optimal play. `until=turn` includes the
+next turn's start effects; `until=game` passes future turns without listed actions.
+A follow-up can read its own task with `engine_read`. Changing a condition uses
+`engine_prepare` with `baseId` and top-level `changes`, inherits the other
+conditions, and requires a fresh confirmation. Task files contain the proposed
+position, execution state and local report for recovery, not another chat store.
+
+An optional operator-owned persona, for example
+`persona: { "profile": "tablemate", "name": "小派", "humor": "light" }`, sets a
+short communication style. Profiles are `tablemate`, `neutral`, or `character`;
+optional `character` fields are `identity`, `traits`, `style`, `background`, and
+`examples` (`{ user, assistant }` pairs). This is a small internal character sheet,
+not a Character Card V2 importer. Role details do not override evidence,
+permissions, confirmation or selective reply behavior. A changed persona is
+applied on worker restart through the existing instruction update, preserving
+each group's thread. The debug page shows instructions, dataset dates, engine
+task IDs/status/timing and actual delivery text alongside model output.
 
 Optional local deck data is installed in the same snapshot directory as
 `decks.json`, with `snapshot.json.decks` containing the approved public file's

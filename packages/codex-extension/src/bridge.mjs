@@ -4,11 +4,16 @@ import { groupUsage, recordResult } from './usage.mjs';
 import { receivedQuote, quotesAssistant, quotedInput, inputChars, verifyAssistantQuote } from './quotes.mjs';
 import { describeMessage, isVisualMessage } from './message-content.mjs';
 import { prepareVisual } from './visuals.mjs';
+import { validateEngineConfig } from './engine.mjs';
 import { validateSnapConfig } from './snap.mjs';
+import { validatePersona } from './persona.mjs';
 import { imageDeckRequest } from './decks.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
+  validatePersona(value.persona);
   validateSnapConfig(value.snap);
+  validateEngineConfig(value.engine);
+  if (value.engine && (!value.snap || typeof value.stateDir !== "string" || !isAbsolute(value.stateDir))) throw Error("Local engine requires SNAP data and a private stateDir");
   const url = new URL(value.baseUrl);
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
     || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw Error('Use an explicit loopback daemon URL');
@@ -253,10 +258,11 @@ export class Bridge {
       task.state = 'generating'; usage.callsStarted++; usage.lastCallAt = this.now(); usage.callTimes.push(usage.lastCallAt);
       task.modelStartedAt = usage.lastCallAt;
       this.store.save();
+      const scope = {accountId:this.config.accountId,groupId:task.threadId,messages:messages.map(message=>({sender:message.senderId,text:message.body??""}))};
       let decision;
       try {
         decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}), ...(conversionRequest ? {deckImageRequest:{authorized:!!deckImageIndex,imageIndex:deckImageIndex??null,sender:conversionRequest.senderId,requestMessageId:conversionRequest.id,sourceMessageId:selectedImage?.id??null}} : {}) }, this.config.persistentConversations ? {
-          imagePaths,
+          imagePaths, scope,
           persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
           onThread: info => {
             const existing = this.store.data.conversations[task.threadId];
@@ -265,9 +271,9 @@ export class Bridge {
             this.store.data.conversations[task.threadId] = { ...info, seenMessageIds: [...new Set([...(existing?.seenMessageIds ?? []), ...messages.map(message => message.id)])].slice(-2000) };
             this.store.save();
           },
-        } : { imagePaths });
+        } : { imagePaths, scope });
         task.modelCompletedAt = this.now();
-        if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > (decision.verifiedDeckCode ? 6000 : 1600))) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
+        if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > (decision.enginePreview ? 10000 : decision.verifiedDeckCode ? 6000 : 1600))) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
       } catch (error) {
         task.modelCompletedAt = this.now();
         recordResult(this.store.data, task, error.usage, 'failed'); task.state = 'generation-failed'; this.store.save();
@@ -275,6 +281,7 @@ export class Bridge {
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
       task.modelRequests = decision.modelRequests ?? 1;
+      if (decision.engineOperations?.length) task.engineOperations = decision.engineOperations;
       if (decision.verifiedDeckCode) task.verifiedDeckCode = true;
       generated = true;
       if (observeOnly) {

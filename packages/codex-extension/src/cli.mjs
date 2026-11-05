@@ -9,25 +9,32 @@ import { StateStore } from './state.mjs';
 import { usageSnapshot } from './usage.mjs';
 import { writeContextView } from './context-view.mjs';
 import { startDebugServer } from './debug-server.mjs';
-import { createSnapLookup } from './snap.mjs';
+import { createLocalDataRouter, installLocalData } from './local-data.mjs';
 
 const [command, configPath, requestedGroup] = process.argv.slice(2);
-if (!['doctor', 'run', 'codex-test', 'usage', 'context', 'debug'].includes(command) || !configPath) {
-  console.error('Usage: wx-codex doctor|run|codex-test|usage|context|debug /absolute/private/config.json [groupId|debugPort]'); process.exit(2);
+if (!['doctor', 'run', 'codex-test', 'usage', 'context', 'debug', 'data-status', 'install-data'].includes(command) || !configPath) {
+  console.error('Usage: wx-codex doctor|run|codex-test|usage|context|debug|data-status|install-data /absolute/private/config.json [groupId|debugPort]'); process.exit(2);
 }
 let store; let codex; let debugServer;
 const controller = new AbortController();
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { controller.abort(); codex?.close(); });
 try {
   const config = validateConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')), { bootstrap: command !== 'run' });
-  const snapLookup = config.snap ? createSnapLookup({ snap: config.snap }) : undefined;
-  if (command === 'debug') {
+  const snapLookup = config.snap ? createLocalDataRouter({ snap: config.snap, engine: config.engine, stateDir:config.stateDir, signal:controller.signal }) : undefined;
+  if(command==='data-status') {
+    delete process.env.AGENT_WECHAT_TOKEN;
+    console.log(JSON.stringify({data:snapLookup?.inspect(),engine:config.engine?await snapLookup.lookup([{kind:'engine_status',region:'cn'}]):null},null,2));
+  } else if(command==='install-data') {
+    delete process.env.AGENT_WECHAT_TOKEN;
+    if(!requestedGroup)throw Error('Provide a prepared local data directory');
+    console.log(JSON.stringify(installLocalData(resolve(configPath),requestedGroup),null,2));
+  } else if (command === 'debug') {
     delete process.env.AGENT_WECHAT_TOKEN;
     const port = requestedGroup === undefined ? 16175 : Number(requestedGroup);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('Debug port must be between 1024 and 65535');
-    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup });
+    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup, persona:config.persona });
     await codex.start();
-    debugServer = await startDebugServer({ config, codex, port });
+    debugServer = await startDebugServer({ config, codex, port, localDataStatus: snapLookup ? ()=> {const installed=JSON.parse(readFileSync(resolve(configPath),"utf8"));snapLookup.reload(installed.snap);return snapLookup.inspect();} : undefined });
     console.log(JSON.stringify({ event: 'debug.ready', url: `http://127.0.0.1:${port}` }));
     await new Promise(resolve => { if (controller.signal.aborted) resolve(); else controller.signal.addEventListener('abort', resolve, { once: true }); });
   } else if (command === 'usage') {
@@ -43,7 +50,7 @@ try {
     if (JSON.stringify(snapshot.binding) !== JSON.stringify(binding)) throw Error('Context/account binding mismatch');
     const group = requestedGroup ?? (config.groups.length === 1 ? config.groups[0].id : null);
     if (!config.groups.some(item => item.id === group) || !snapshot.conversations?.[group]) throw Error('Select a configured group with an existing conversation');
-    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup });
+    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup, persona:config.persona });
     await codex.start();
     console.log(JSON.stringify({ event: 'context.view', path: await writeContextView(codex, config.stateDir, group, snapshot.conversations[group]) }));
   } else {
@@ -58,7 +65,7 @@ try {
     } else {
       if (!config.stateDir || !config.stateDir.startsWith('/')) throw Error('An absolute private stateDir is required');
       const cwd = join(config.stateDir, 'worker'); mkdirSync(cwd, { recursive: true, mode: 0o700 });
-      codex = new CodexClient({ cwd, binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup });
+      codex = new CodexClient({ cwd, binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup, persona:config.persona });
       await codex.start();
       if (command === 'codex-test') {
         const answer = await codex.answer({ history: [], message: { sender: 'local-test', text: '请回复：Codex 扩展连接成功。' }, mode: 'prefix' });
@@ -71,6 +78,7 @@ try {
         console.log(JSON.stringify({ event: 'worker.ready', sendEnabled: config.sendEnabled === true }));
         while (!controller.signal.aborted) {
           await bridge.identity();
+          if(snapLookup)try {const installed=JSON.parse(readFileSync(resolve(configPath),'utf8'));if(snapLookup.reload(installed.snap))console.log(JSON.stringify({event:'local-data.updated'}));}catch{console.error(JSON.stringify({event:'local-data.update-rejected'}));}
           const page = await client.events(config.accountId, store.data.cursor, 100);
           for (const event of page.items) await bridge.accept(event);
           await bridge.drain();

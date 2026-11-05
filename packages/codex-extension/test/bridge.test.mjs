@@ -387,3 +387,10 @@ test('fake @ and @all cannot bypass normal sender policy; source recall or nativ
  f.codex.answer=async()=>{f.message.mentions={state:'known',userIds:[]};return{reply:true,text:'must not send'}};
  await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.calls.length,0);
 });
+
+test('transport simulation scope includes only current raw messages, never embedded quote text',async t=>{
+ const f=quoteFixture(t);let scope;
+ f.message.body='哈哈';f.message.quote.embeddedText='确认推演 '+ 'a'.repeat(16);
+ f.codex.answer=async(_context,options)=>{scope=options.scope;return{reply:true,text:'核对完成',engineOperations:[{kind:'engine_confirm',status:'denied'}]}};
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(scope.messages[0].text,'哈哈');assert.equal(scope.accountId,f.config.accountId);assert.equal(scope.groupId,f.message.threadId);assert.equal(scope.messages[0].sender,f.message.senderId);assert.equal(JSON.stringify(scope).includes('确认推演'),false);assert.equal(Object.values(f.store.data.tasks)[0].engineOperations[0].status,'denied');
+});

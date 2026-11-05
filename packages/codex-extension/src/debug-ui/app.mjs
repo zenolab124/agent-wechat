@@ -34,6 +34,7 @@ const time = (value) => {
     : "";
 };
 const lookupLabel = (query) => {
+  if (query?.kind?.startsWith("engine_")) return ({engine_status:"引擎能力与格式",engine_read:"读取推演："+(query.id??""),engine_catalog:"引擎目录："+(query.query??""),engine_prepare:"准备局面核对",engine_confirm:"确认推演："+(query.id??"")})[query.kind]??query.kind;
   if (query?.kind === "recent_cards") return "按上线日期查询近期卡牌";
   if (query?.kind === "location") return `地点：${query.query ?? ""}`;
   if (query?.kind === "location_schedule")
@@ -268,6 +269,7 @@ function render(data) {
     ? "已上报用量完整"
     : `${usage.unknownUsageCalls} 次调用用量未知或未完成`;
   $("prompt").textContent = data.instructions.join("\n\n");
+  if(data.localData) $("limits").textContent += ` · 本地卡牌 ${time(data.localData.catalogGeneratedAt)} · OTA ${time(data.localData.ota?.fetchedAt)} · 人设 ${data.persona?.name??"默认"}`;
   const tasks = document.createDocumentFragment();
   for (const task of data.tasks) {
     const row = el("div", undefined, "task");
@@ -309,6 +311,8 @@ function render(data) {
             : "引用助手触发 · 必回复"
         )
       );
+    for(const operation of task.engineOperations??[]) row.append(el("small",`${lookupLabel(operation)} · ${operation.status}${operation.version?" · "+operation.version:""}${operation.id?" · "+operation.id:""}${operation.durationMs!==null?" · 引擎计算 "+(operation.durationMs/1000).toFixed(3)+" 秒":""}${operation.reused?" · 复用结果":""}`));
+    if(task.deliveryText) {const detail=el("details");detail.append(el("summary","本轮实际发送文本"),el("pre",task.deliveryText));row.append(detail);}
     const stages = [
       ["waitMs", "等待"],
       ["modelMs", "模型调用"],

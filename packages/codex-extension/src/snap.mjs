@@ -1,3 +1,4 @@
+import { createEngineService, validateEngineLookup } from "./engine.mjs";
 import { createHash } from "node:crypto";
 import {
   openSync,
@@ -62,12 +63,30 @@ export function validateSnapConfig(snap) {
 export function validateLookups(value) {
   if (!Array.isArray(value) || !value.length || value.length > 8)
     throw Error("Invalid SNAP lookup batch");
+  if (
+    value.filter((item) =>
+      ["engine_prepare", "engine_confirm"].includes(item?.kind)
+    ).length > 1
+  )
+    throw Error("One simulation operation per reply");
   for (const item of value) {
+    if (item?.kind?.startsWith("engine_")) {
+      validateEngineLookup(item);
+      continue;
+    }
     if (
       item &&
       ["location", "location_schedule", "rules"].includes(item.kind)
     ) {
       validateKnowledgeLookup(item);
+      continue;
+    }
+    if (item?.kind === "data_status") {
+      if (
+        Object.keys(item).some((k) => !["kind", "region"].includes(k)) ||
+        !["cn", "global"].includes(item.region)
+      )
+        throw Error("Invalid data status lookup");
       continue;
     }
     if (item?.kind === "recent_cards") {
@@ -265,15 +284,26 @@ function localBytes(directory, name) {
   }
 }
 
-// No database SDK, child process or network client is available on this path.
-// A separate preparation step installs an immutable local data package.
+// Dataset queries only read a separately installed immutable package.
+// The optional simulator calls one fixed local CLI; no database or download path.
 export function createSnapLookup({
   snap,
+  engine,
+  stateDir,
+  signal,
   now = Date.now,
   readFile = (name) => localBytes(snap.dataDir, name),
 } = {}) {
   validateSnapConfig(snap);
-  let catalog, ota, decks, deckSource;
+  const simulator = engine
+    ? createEngineService({
+        config: engine,
+        directory: join(stateDir, "engine-requests"),
+        now,
+        signal,
+      })
+    : null;
+  let catalog, ota, decks, deckSource, installedSnapshot;
   const knowledge = { locations: {}, schedules: {} };
   function load() {
     if (catalog) return catalog;
@@ -406,6 +436,7 @@ export function createSnapLookup({
       } catch {
         /* No use of unverified rule data. */
       }
+    installedSnapshot = snapshot;
     catalog = {
       releaseId: manifest.releaseId,
       generatedAt: manifest.generatedAt,
@@ -415,202 +446,296 @@ export function createSnapLookup({
     };
     return catalog;
   }
-  return {
-    defaultRegion: snap.defaultRegion,
-    async lookup(requests, { imageDeckAllowed = false, imageDeckIndex } = {}) {
-      validateLookups(requests);
-      return requests.map((query) => {
-        try {
-          if (
-            query.region === "global" &&
-            ![
-              "card",
-              "recent_cards",
-              "location",
-              "location_schedule",
-              "encode_image_deck",
-              "decode_deck",
-            ].includes(query.kind)
+  function inspect({ strict = false } = {}) {
+    const source = load(),
+      ref = installedSnapshot;
+    if (
+      strict &&
+      ((ref.ota && !ota) ||
+        (ref.decks && !decks) ||
+        (ref.knowledge?.rules && !knowledge.rules) ||
+        ["cn", "global"].some((region) =>
+          ["locations", "schedules"].some(
+            (kind) =>
+              ref.knowledge?.[kind]?.[region] && !knowledge[kind][region]
           )
-            return {
-              query,
-              status: "unsupported",
-              reason: "未接入该项国际服离线资料，不借用国服记录。",
+        ))
+    )
+      throw Error("Incomplete local data package");
+    return {
+      offline: true,
+      releaseId: source.releaseId,
+      catalogGeneratedAt: source.generatedAt,
+      preparedAt: source.preparedAt,
+      catalogSource: source.source,
+      cards: { cn: source.cards.cn.length, global: source.cards.global.length },
+      ota: ota ? { count: ota.items.length, fetchedAt: ota.fetchedAt } : null,
+      decks: decks ? { count: decks.length, ...deckSource } : null,
+      knowledge: {
+        locations: Object.fromEntries(
+          Object.entries(knowledge.locations).map(([region, d]) => [
+            region,
+            { count: d.data.length, observedAt: d.observedAt },
+          ])
+        ),
+        schedules: Object.fromEntries(
+          Object.entries(knowledge.schedules).map(([region, d]) => [
+            region,
+            { count: d.data.entries.length, observedAt: d.observedAt },
+          ])
+        ),
+        rules: knowledge.rules
+          ? {
+              count: knowledge.rules.entries.length,
+              version: knowledge.rules.version ?? null,
+            }
+          : null,
+      },
+    };
+  }
+  return {
+    inspect,
+    defaultRegion: snap.defaultRegion,
+    engineEnabled: !!engine,
+    async lookup(
+      requests,
+      { imageDeckAllowed = false, imageDeckIndex, scope } = {}
+    ) {
+      validateLookups(requests);
+      return Promise.all(
+        requests.map(async (query) => {
+          try {
+            if (query.kind === "data_status") {
+              const status = inspect();
+              return {
+                query,
+                status: "ok",
+                ...status,
+                cards: status.cards[query.region],
+                ota: query.region === "cn" ? status.ota : null,
+                decks: query.region === "cn" ? status.decks : null,
+                knowledge: {
+                  locations: status.knowledge.locations[query.region] ?? null,
+                  schedules: status.knowledge.schedules[query.region] ?? null,
+                  rules: query.region === "cn" ? status.knowledge.rules : null,
+                },
+                note: "本机已装快照状态，不是实时联网检查；旧会话不改变当前查询来源。",
+              };
+            }
+            if (query.kind.startsWith("engine_")) {
+              if (!simulator)
+                return {
+                  query,
+                  status: "unavailable",
+                  offline: true,
+                  reason: "本机尚未配置对局引擎。",
+                };
+              if (query.region !== "cn")
+                return { query, ...(await simulator.lookup(query)) };
+              const source = load();
+              return {
+                query,
+                ...(await simulator.lookup(query, {
+                  scope,
+                  cards: source.cards.cn,
+                  locations: knowledge.locations.cn?.data ?? [],
+                })),
+              };
+            }
+            if (
+              query.region === "global" &&
+              ![
+                "card",
+                "recent_cards",
+                "location",
+                "location_schedule",
+                "encode_image_deck",
+                "decode_deck",
+              ].includes(query.kind)
+            )
+              return {
+                query,
+                status: "unsupported",
+                reason: "未接入该项国际服离线资料，不借用国服记录。",
+              };
+            const source = load(),
+              regional = source.cards[query.region];
+            const metadata = {
+              region: query.region,
+              releaseId: source.releaseId,
+              catalogGeneratedAt: source.generatedAt,
+              preparedAt: source.preparedAt,
+              catalogSource: source.source,
+              offline: true,
             };
-          const source = load(),
-            regional = source.cards[query.region];
-          const metadata = {
-            region: query.region,
-            releaseId: source.releaseId,
-            catalogGeneratedAt: source.generatedAt,
-            preparedAt: source.preparedAt,
-            catalogSource: source.source,
-            offline: true,
-          };
-          if (query.kind === "rules")
-            return {
-              query,
-              ...metadata,
-              ...(knowledge.rules
-                ? queryRules(query, knowledge.rules)
-                : {
-                    status: "unavailable",
-                    reason:
-                      "本机未安装通过校验的规则文档资料；不能凭卡面文字推定结算。",
-                  }),
-            };
-          if (query.kind === "location" || query.kind === "location_schedule") {
-            const data = knowledge.locations[query.region],
-              schedule = knowledge.schedules[query.region];
-            if (!data)
+            if (query.kind === "rules")
               return {
                 query,
                 ...metadata,
-                status: "unavailable",
-                reason: "本机地点资料缺失或校验失败，不联网补值。",
+                ...(knowledge.rules
+                  ? queryRules(query, knowledge.rules)
+                  : {
+                      status: "unavailable",
+                      reason:
+                        "本机未安装通过校验的规则文档资料；不能凭卡面文字推定结算。",
+                    }),
               };
-            return {
-              query,
-              ...metadata,
-              locationSource: { observedAt: data.observedAt, offline: true },
-              ...(schedule
-                ? {
-                    scheduleSource: {
-                      observedAt: schedule.observedAt,
+            if (
+              query.kind === "location" ||
+              query.kind === "location_schedule"
+            ) {
+              const data = knowledge.locations[query.region],
+                schedule = knowledge.schedules[query.region];
+              if (!data)
+                return {
+                  query,
+                  ...metadata,
+                  status: "unavailable",
+                  reason: "本机地点资料缺失或校验失败，不联网补值。",
+                };
+              return {
+                query,
+                ...metadata,
+                locationSource: { observedAt: data.observedAt, offline: true },
+                ...(schedule
+                  ? {
+                      scheduleSource: {
+                        observedAt: schedule.observedAt,
+                        offline: true,
+                      },
+                    }
+                  : {}),
+                ...queryLocations(query, data.data, schedule?.data, now()),
+              };
+            }
+            if (query.kind === "recent_cards") {
+              const recent = recentCards(regional, now(), query.limit ?? 5);
+              return {
+                query,
+                ...metadata,
+                status: "ok",
+                asOf: new Date(now()).toISOString(),
+                ...recent,
+                cards: recent.cards.map((card) => ({
+                  ...card,
+                  localDeckCount:
+                    query.region === "cn" && decks
+                      ? decks.filter((deck) =>
+                          deck.card_def_ids.includes(card.key)
+                        ).length
+                      : null,
+                })),
+              };
+            }
+            if (query.kind === "encode_image_deck")
+              return {
+                query,
+                ...metadata,
+                ...imageDeckCode(
+                  query,
+                  regional,
+                  imageDeckAllowed && query.imageIndex === imageDeckIndex
+                ),
+              };
+            if (query.kind === "decks" || query.kind === "decode_deck") {
+              if (query.kind === "decks" && !decks)
+                return {
+                  query,
+                  ...metadata,
+                  status: "unavailable",
+                  reason: "本机国服卡组库缺失或校验失败，不联网补值。",
+                };
+              return {
+                query,
+                ...metadata,
+                ...(query.region === "cn" ? { deckSource } : {}),
+                ...queryDecks(
+                  query,
+                  query.region === "cn" ? decks ?? [] : [],
+                  regional
+                ),
+              };
+            }
+            const records =
+              query.region === "cn" && ota ? projectOta(ota.items, now()) : [];
+            const otaMeta =
+              query.region === "cn"
+                ? ota
+                  ? {
+                      source: ota.source,
+                      fetchedAt: ota.fetchedAt,
                       offline: true,
-                    },
-                  }
-                : {}),
-              ...queryLocations(query, data.data, schedule?.data, now()),
-            };
-          }
-          if (query.kind === "recent_cards") {
-            const recent = recentCards(regional, now(), query.limit ?? 5);
+                    }
+                  : { unavailable: true }
+                : undefined;
+            if (query.kind === "latest_changes") {
+              if (!ota)
+                return {
+                  query,
+                  status: "unavailable",
+                  reason: "本机缺少可校验的国服 OTA 记录，不能确认最近调整。",
+                  ...metadata,
+                };
+              const dates = [
+                ...new Set(
+                  records
+                    .filter((row) => row.date <= now())
+                    .map((row) => row.date)
+                ),
+              ].slice(0, 3);
+              return {
+                query,
+                status: "ok",
+                ...metadata,
+                otaSource: otaMeta,
+                availableBatches: dates.map((date) => ({
+                  date,
+                  count: records.filter((row) => row.date === date).length,
+                })),
+                changes: records
+                  .filter((row) => row.date === dates[0])
+                  .slice(0, 100),
+              };
+            }
+            const found = matches(regional, query.query);
+            if (!found.length)
+              return {
+                query,
+                status: "not-found",
+                ...metadata,
+                reason: "本服本地目录无匹配；不得从另一服补值。",
+              };
+            const cards = found.slice(0, 8);
             return {
               query,
-              ...metadata,
               status: "ok",
-              asOf: new Date(now()).toISOString(),
-              ...recent,
-              cards: recent.cards.map((card) => ({
+              ...metadata,
+              ambiguous: found.length > 1,
+              truncated: found.length > cards.length,
+              cards: cards.map((card) => ({
                 ...card,
-                localDeckCount:
-                  query.region === "cn" && decks
-                    ? decks.filter((deck) =>
-                        deck.card_def_ids.includes(card.key)
-                      ).length
-                    : null,
+                relatedCards: card.sideCardKeys
+                  .map((key) => regional.find((row) => row.key === key))
+                  .filter(Boolean)
+                  .slice(0, 8),
               })),
-            };
-          }
-          if (query.kind === "encode_image_deck")
-            return {
-              query,
-              ...metadata,
-              ...imageDeckCode(
-                query,
-                regional,
-                imageDeckAllowed && query.imageIndex === imageDeckIndex
-              ),
-            };
-          if (query.kind === "decks" || query.kind === "decode_deck") {
-            if (query.kind === "decks" && !decks)
-              return {
-                query,
-                ...metadata,
-                status: "unavailable",
-                reason: "本机国服卡组库缺失或校验失败，不联网补值。",
-              };
-            return {
-              query,
-              ...metadata,
-              ...(query.region === "cn" ? { deckSource } : {}),
-              ...queryDecks(
-                query,
-                query.region === "cn" ? decks ?? [] : [],
-                regional
-              ),
-            };
-          }
-          const records =
-            query.region === "cn" && ota ? projectOta(ota.items, now()) : [];
-          const otaMeta =
-            query.region === "cn"
-              ? ota
-                ? {
-                    source: ota.source,
-                    fetchedAt: ota.fetchedAt,
-                    offline: true,
-                  }
-                : { unavailable: true }
-              : undefined;
-          if (query.kind === "latest_changes") {
-            if (!ota)
-              return {
-                query,
-                status: "unavailable",
-                reason: "本机缺少可校验的国服 OTA 记录，不能确认最近调整。",
-                ...metadata,
-              };
-            const dates = [
-              ...new Set(
-                records
-                  .filter((row) => row.date <= now())
-                  .map((row) => row.date)
-              ),
-            ].slice(0, 3);
-            return {
-              query,
-              status: "ok",
-              ...metadata,
               otaSource: otaMeta,
-              availableBatches: dates.map((date) => ({
-                date,
-                count: records.filter((row) => row.date === date).length,
-              })),
               changes: records
-                .filter((row) => row.date === dates[0])
-                .slice(0, 100),
+                .filter((row) => cards.some((card) => row.cardKey === card.key))
+                .slice(0, 30),
+              note: "资料全部来自本机离线快照，仅覆盖标示的生成/导出时间；不代表实时客户端或最新公告。历史、限时、过期、待生效值不能直接冒充当前效果。",
             };
-          }
-          const found = matches(regional, query.query);
-          if (!found.length)
+          } catch {
             return {
               query,
-              status: "not-found",
-              ...metadata,
-              reason: "本服本地目录无匹配；不得从另一服补值。",
+              status: "unavailable",
+              offline: true,
+              reason:
+                "本机 SNAP 资料缺失或校验失败，不能确认数据；不会联网或查询数据库补值。",
             };
-          const cards = found.slice(0, 8);
-          return {
-            query,
-            status: "ok",
-            ...metadata,
-            ambiguous: found.length > 1,
-            truncated: found.length > cards.length,
-            cards: cards.map((card) => ({
-              ...card,
-              relatedCards: card.sideCardKeys
-                .map((key) => regional.find((row) => row.key === key))
-                .filter(Boolean)
-                .slice(0, 8),
-            })),
-            otaSource: otaMeta,
-            changes: records
-              .filter((row) => cards.some((card) => row.cardKey === card.key))
-              .slice(0, 30),
-            note: "资料全部来自本机离线快照，仅覆盖标示的生成/导出时间；不代表实时客户端或最新公告。历史、限时、过期、待生效值不能直接冒充当前效果。",
-          };
-        } catch {
-          return {
-            query,
-            status: "unavailable",
-            offline: true,
-            reason:
-              "本机 SNAP 资料缺失或校验失败，不能确认数据；不会联网或查询数据库补值。",
-          };
-        }
-      });
+          }
+        })
+      );
     },
   };
 }
