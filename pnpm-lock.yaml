@@ -81,6 +81,12 @@ importers:
         specifier: ^7.1.0
         version: 7.3.7(@types/node@25.3.0)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.9.1)
 
+  packages/codex-extension:
+    dependencies:
+      '@agent-wechat/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/desktop:
     dependencies:
       '@agent-wechat/client-ui':

@@ -137,6 +137,61 @@ search-index maintenance, arbitrary profile migration, and seamless switching
 back to the official app are not established. Copy/import/export workflows remain
 experimental. See the [native profile guide](packages/native-client-rust/README.md).
 
+## Codex extension (experimental fork)
+
+This fork adds `packages/codex-extension`, a source-run workspace package for a
+local Codex App Server. It reuses the native SDK and daemon without OpenClaw.
+Node 24.22.1 or newer and an already authenticated `codex` executable are required.
+The native transport remains pinned to upstream v1.4.0; a fresh profile on macOS
+still needs real account and group acceptance. No account-safety guarantee is made.
+
+Use a dedicated managed account/profile and an explicit loopback URL. Do not use
+`auth login --official`, import an everyday account's profile, or scan its QR with
+an account that must stay signed in elsewhere. Create a private JSON config outside
+the checkout with these fields:
+
+| Field | Purpose |
+| --- | --- |
+| `baseUrl` | Explicit local daemon URL, such as `http://127.0.0.1:16174` |
+| `accountId`, `ownUsername` | Exact daemon account and authenticated WeChat identity |
+| `stateDir` | Absolute private worker directory, separate from the native profile |
+| `groups` | Array of `{ id, senders, mode, prefix? }`; exact ordinary-group IDs and sender IDs only |
+| `mode` | Per-group `prefix` requires the configured text prefix; `selective` lets Codex decide whether to answer without an @mention |
+| `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
+| `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
+| `cooldownMs` | Minimum interval between accepted replies per group; defaults to 10000 |
+| `codexBinary`, `model` | Optional executable/model overrides; omitted model uses the existing Codex default |
+
+After `pnpm --filter @agent-wechat/codex-extension... install --ignore-scripts`,
+run the source CLI (no Rust or TypeScript build is required):
+
+```bash
+node packages/codex-extension/src/cli.mjs doctor /absolute/private/config.json
+node packages/codex-extension/src/cli.mjs codex-test /absolute/private/config.json
+node packages/codex-extension/src/cli.mjs run /absolute/private/config.json
+```
+
+Supply `AGENT_WECHAT_TOKEN` from the local credential store privately at launch;
+do not put it in the JSON config or commit it. `doctor` is read-only. `codex-test`
+checks model handoff without sending to WeChat. Worker logs contain status events,
+not message bodies. Start with `sendEnabled: false`, then confirm the exact group,
+sender and test message before enabling live replies.
+
+Only fresh committed incoming text is eligible; self messages, catch-up/imports,
+old messages, recalls and other senders/groups are ignored. History is fetched
+from the native store, with at most 12 messages from admitted senders. The sidecar
+keeps cursors, pending reply work and receipts rather than a second chat archive.
+Sends have stable keys; uncertain submissions are inspected, never blindly retried.
+An unresolved receipt holds subsequent replies in that group. A worker lock
+refuses concurrent owners; after an unclean exit, verify the recorded PID has
+stopped before removing only that worker's stale `worker.lock`.
+
+Codex runs with read-only sandbox, no approvals, empty execution environments,
+disabled shell/Apps/web/skills and no external MCP tools. Knowledge-base access,
+media, direct messages, group management and unattended service installation are
+outside this initial extension. The package is private and workspace-only; it is
+not published to npm.
+
 ## OpenClaw
 
 Connect an agent to WeChat with the `@agent-wechat/agent-wechat` plugin:
