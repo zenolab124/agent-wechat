@@ -28,7 +28,8 @@ export class StateStore {
       const conversationIds = new Set();
       for (const item of Object.values(this.data.conversations)) {
         if (!item.threadId || typeof item.threadId !== 'string' || !item.profile || typeof item.profile !== 'string'
-          || !Array.isArray(item.seenMessageIds) || item.seenMessageIds.some(id => typeof id !== 'string')) throw Error('Invalid group conversation binding');
+          || !Array.isArray(item.seenMessageIds) || item.seenMessageIds.some(id => typeof id !== 'string')
+          || item.instructionsHash !== undefined && (typeof item.instructionsHash !== 'string' || !/^[a-f0-9]{64}$/.test(item.instructionsHash))) throw Error('Invalid group conversation binding');
         const key = JSON.stringify([item.profile, item.threadId]);
         if (conversationIds.has(key)) throw Error('A Codex conversation cannot belong to multiple groups');
         conversationIds.add(key);

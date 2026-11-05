@@ -9,7 +9,7 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { usageSnapshot } from "./usage.mjs";
-import { GROUP_INSTRUCTIONS, outputInstructions } from "./instructions.mjs";
+import { groupInstructions, outputInstructions } from "./instructions.mjs";
 import { imageDirectory, ownedImageId } from "./visuals.mjs";
 
 const assets = new Map([
@@ -179,7 +179,10 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
         updatedAt: new Date().toISOString(),
         usageSince: state.usage.since,
         turns,
-        instructions: [GROUP_INSTRUCTIONS, outputInstructions(config.model)],
+        instructions: [
+          groupInstructions(!!config.snap),
+          outputInstructions(config.model, config.snap?.defaultRegion),
+        ],
         usage:
           usageSnapshot(state).groups.find(
             (item) => item.threadId === group.id
@@ -213,6 +216,7 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
             replyFallback: task.replyFallback === true,
             silenceReason: task.silenceReason ?? null,
             replySuppressed: task.replySuppressed === true,
+            modelRequests: task.modelRequests ?? null,
           })),
       });
     } catch {

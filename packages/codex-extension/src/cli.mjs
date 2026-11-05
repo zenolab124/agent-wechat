@@ -9,6 +9,7 @@ import { StateStore } from './state.mjs';
 import { usageSnapshot } from './usage.mjs';
 import { writeContextView } from './context-view.mjs';
 import { startDebugServer } from './debug-server.mjs';
+import { createSnapLookup } from './snap.mjs';
 
 const [command, configPath, requestedGroup] = process.argv.slice(2);
 if (!['doctor', 'run', 'codex-test', 'usage', 'context', 'debug'].includes(command) || !configPath) {
@@ -19,11 +20,12 @@ const controller = new AbortController();
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { controller.abort(); codex?.close(); });
 try {
   const config = validateConfig(JSON.parse(readFileSync(resolve(configPath), 'utf8')), { bootstrap: command !== 'run' });
+  const snapLookup = config.snap ? createSnapLookup({ snap: config.snap }) : undefined;
   if (command === 'debug') {
     delete process.env.AGENT_WECHAT_TOKEN;
     const port = requestedGroup === undefined ? 16175 : Number(requestedGroup);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('Debug port must be between 1024 and 65535');
-    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome });
+    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup });
     await codex.start();
     debugServer = await startDebugServer({ config, codex, port });
     console.log(JSON.stringify({ event: 'debug.ready', url: `http://127.0.0.1:${port}` }));
@@ -41,7 +43,7 @@ try {
     if (JSON.stringify(snapshot.binding) !== JSON.stringify(binding)) throw Error('Context/account binding mismatch');
     const group = requestedGroup ?? (config.groups.length === 1 ? config.groups[0].id : null);
     if (!config.groups.some(item => item.id === group) || !snapshot.conversations?.[group]) throw Error('Select a configured group with an existing conversation');
-    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome });
+    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup });
     await codex.start();
     console.log(JSON.stringify({ event: 'context.view', path: await writeContextView(codex, config.stateDir, group, snapshot.conversations[group]) }));
   } else {
@@ -56,7 +58,7 @@ try {
     } else {
       if (!config.stateDir || !config.stateDir.startsWith('/')) throw Error('An absolute private stateDir is required');
       const cwd = join(config.stateDir, 'worker'); mkdirSync(cwd, { recursive: true, mode: 0o700 });
-      codex = new CodexClient({ cwd, binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome });
+      codex = new CodexClient({ cwd, binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome, snapLookup });
       await codex.start();
       if (command === 'codex-test') {
         const answer = await codex.answer({ history: [], message: { sender: 'local-test', text: '请回复：Codex 扩展连接成功。' }, mode: 'prefix' });

@@ -37,7 +37,10 @@ function message(parent, role, text, at, sender, quote) {
   const box = el("div", undefined, `message ${role}`);
   const who = el("div", undefined, "who");
   who.append(
-    el("strong", role === "assistant" ? "助手" : "群成员"),
+    el(
+      "strong",
+      role === "assistant" ? "助手" : role === "source" ? "SNAP 资料" : "群成员"
+    ),
     document.createTextNode(`  ${time(at)}${sender ? ` · ${sender}` : ""}`)
   );
   box.append(who);
@@ -127,7 +130,23 @@ function renderTurns() {
             );
           }
         }
-      else message(box, "user", raw);
+      else if (Array.isArray(input?.snapLookupResults)) {
+        for (const result of input.snapLookupResults) {
+          const bubble = message(
+            box,
+            "source",
+            `${result.query?.region === "cn" ? "国服" : "国际服"} · ${
+              result.query?.kind ?? "查询"
+            } · ${result.query?.query ?? "最近 OTA"} · ${result.status}`
+          );
+          const details = el("details");
+          details.append(
+            el("summary", "查看资料、来源与时间"),
+            el("pre", JSON.stringify(result, null, 2))
+          );
+          bubble.append(details);
+        }
+      } else message(box, "user", raw);
     }
     for (const raw of turn.answers) {
       let decision;
@@ -136,7 +155,22 @@ function renderTurns() {
       } catch {
         /* Preserve malformed final output for debugging. */
       }
-      if (decision?.reply === false)
+      if (Array.isArray(decision?.lookup))
+        box.append(
+          el(
+            "div",
+            `助手查询 SNAP 资料：${decision.lookup
+              .map(
+                (item) =>
+                  `${item.region === "cn" ? "国服" : "国际服"} ${
+                    item.query ?? "最近 OTA"
+                  }`
+              )
+              .join("、")}`,
+            "message silent"
+          )
+        );
+      else if (decision?.reply === false)
         box.append(el("div", "助手选择保持沉默", "message silent"));
       else
         message(
@@ -244,6 +278,10 @@ function render(data) {
       )
     );
     if (task.sendId) row.append(el("small", `发送 ID：${task.sendId}`));
+    if (task.modelRequests)
+      row.append(
+        el("small", `实际模型请求：${task.modelRequests} 次（含资料查询阶段）`)
+      );
     if (task.trigger === "assistant-quote")
       row.append(
         el(

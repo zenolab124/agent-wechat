@@ -251,6 +251,9 @@ WeChat message text. No currency estimate or hard token-spending cap is provided
 Persistent, tool-free turns use the notification's `last` request usage, so previous
 turn totals are not counted again. Repeated context can still contribute input
 tokens; cached input remains part of the reported input count.
+With SNAP lookups enabled, one admitted batch can use several model requests;
+each request's reported usage is added once. `callsStarted` counts admitted model
+batches, while each completed task's `modelRequests` shows the actual request count.
 Statistics start when the v2 journal is initialized; old calls are not backfilled,
 and standalone `codex-test` calls are not assigned to a group.
 
@@ -330,13 +333,46 @@ to IPv4 loopback, rejects cross-origin access and provides no send/edit controls
 It does not expose hidden reasoning or platform instructions. Stop with Ctrl-C;
 the chat worker and WeChat connection remain independent.
 
+Optional `snap: { "defaultRegion": "cn", "dataDir": "/absolute/private/snap-data" }`
+adds local card and OTA lookups without replacing existing group threads. The
+query process has no database SDK, connection configuration or data-download
+path. Prepare and install a local snapshot separately; group traffic cannot
+refresh or download it. Model inference still uses the configured Codex service.
+
+The directory contains the published `catalogManifestV3.json`, all three immutable
+artifacts it references, `ota.json` and `snapshot.json`. The latter has
+`schemaVersion: 1`, `preparedAt`, `catalogSource`, `manifestSha256` and an `ota`
+reference with `region: "cn"`, `source: "snap-card-changes"`, `sha256` and `count`.
+`ota.json` contains `region`, `source`, `fetchedAt` and the exported `items` array.
+Obtain that approved-record export separately, with the data owner's permission;
+public announcement drafts are not a substitute for approved records. Keep all
+paths and data outside the checkout. Install a new complete directory and restart
+the worker to update it; do not overwrite files in a running snapshot.
+
+The worker verifies the local manifest and all three V3 artifacts before using
+card facts, and verifies the separate OTA hash and count. It selects only the
+requested region, keeps missing fields unknown and does not substitute another
+region or an old card table. Reviewed OTA records are CN-only; global OTA queries
+report that no source is connected. Temporary, expired, future and promoted
+adjustments remain separate from card snapshots. Answers identify snapshot dates
+and do not claim live client validation. A missing or corrupt local file is
+reported unavailable, without an online fallback.
+
+The model requests selected facts in JSON, receives results in the same
+conversation and then answers; only the final answer is sent to WeChat. No
+complete card library is added to every prompt. Existing threads receive one
+caller-owned developer configuration update when their instruction hash changes;
+this preserves history when resume parameters alone do not replace earlier
+instructions. The debug timeline shows query stages, selected records and source
+timestamps. These lookups do not enable arbitrary tools or network requests.
+
 Sends have stable keys; uncertain submissions are inspected, never blindly retried.
 An unresolved receipt holds subsequent replies in that group. A worker lock
 refuses concurrent owners; after an unclean exit, verify the recorded PID has
 stopped before removing only that worker's stale `worker.lock`.
 
 Codex runs with read-only sandbox, no approvals, empty execution environments,
-disabled shell/Apps/web/skills and no external MCP tools. Knowledge-base access,
+disabled shell/Apps/web/skills and no external MCP tools. General knowledge-base access,
 outgoing media, voice/file understanding, direct messages, group management and unattended service installation are
 outside this initial extension. The package is private and workspace-only; it is
 not published to npm.

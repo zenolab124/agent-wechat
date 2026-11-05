@@ -198,6 +198,7 @@ test("debug server reads only configured group history without a model turn, wri
   assert.equal(reads, 1);
   assert.equal(data.turns[0].inputs[0], "<script>untrusted</script>");
   assert.equal(data.turns[0].answers[0], '{"reply":false}');
+  assert.ok(data.instructions.every((value) => typeof value === "string"));
   assert.ok(!JSON.stringify(data).includes("private-reasoning"));
   assert.ok(!JSON.stringify(data).includes("private-commentary"));
   assert.ok(!JSON.stringify(data).includes("must-not-expose"));

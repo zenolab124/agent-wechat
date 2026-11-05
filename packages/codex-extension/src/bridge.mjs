@@ -4,8 +4,10 @@ import { groupUsage, recordResult } from './usage.mjs';
 import { receivedQuote, quotesAssistant, quotedInput, inputChars, verifyAssistantQuote } from './quotes.mjs';
 import { describeMessage, isVisualMessage } from './message-content.mjs';
 import { prepareVisual } from './visuals.mjs';
+import { validateSnapConfig } from './snap.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
+  validateSnapConfig(value.snap);
   const url = new URL(value.baseUrl);
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
     || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw Error('Use an explicit loopback daemon URL');
@@ -248,6 +250,7 @@ export class Bridge {
         this.report({ event: 'model.failed' }); throw error;
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
+      task.modelRequests = decision.modelRequests ?? 1;
       generated = true;
       if (observeOnly) {
         task.silenceReason = 'sticker-only';
