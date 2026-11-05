@@ -33,14 +33,23 @@ const time = (value) => {
     ? d.toLocaleString("zh-CN", { hour12: false })
     : "";
 };
-function message(parent, role, text, at, sender) {
+function message(parent, role, text, at, sender, quote) {
   const box = el("div", undefined, `message ${role}`);
   const who = el("div", undefined, "who");
   who.append(
     el("strong", role === "assistant" ? "助手" : "群成员"),
     document.createTextNode(`  ${time(at)}${sender ? ` · ${sender}` : ""}`)
   );
-  box.append(who, el("div", text, "body"));
+  box.append(who);
+  if (quote)
+    box.append(
+      el(
+        "blockquote",
+        `引用 ${quote.sender ?? ""}\n${quote.text || "引用内容没有可用文字"}`,
+        "quote"
+      )
+    );
+  box.append(el("div", text, "body"));
   parent.append(box);
 }
 function renderTurns() {
@@ -77,7 +86,7 @@ function renderTurns() {
       const rows = input?.messages;
       if (Array.isArray(rows))
         for (const row of rows)
-          message(box, "user", row.text, row.at, row.sender);
+          message(box, "user", row.text, row.at, row.sender, row.quote);
       else message(box, "user", raw);
     }
     for (const raw of turn.answers) {
@@ -155,6 +164,8 @@ function render(data) {
   } · ${data.limits.maxCallsPerHour} 次/小时 · ${
     data.limits.batchWindowMs / 1000
   } 秒合并`;
+  if (data.limits.replyToAssistantQuotes)
+    $("limits").textContent += " · 引用助手必回复，免普通接话配额拦截";
   $("polling").textContent = `${
     (data.limits.pollIntervalMs ?? 1000) / 1000
   } 秒`;
@@ -180,6 +191,15 @@ function render(data) {
       )
     );
     if (task.sendId) row.append(el("small", `发送 ID：${task.sendId}`));
+    if (task.trigger === "assistant-quote")
+      row.append(
+        el(
+          "small",
+          task.replyFallback
+            ? "引用助手触发 · 使用澄清答复"
+            : "引用助手触发 · 必回复"
+        )
+      );
     const stages = [
       ["waitMs", "等待"],
       ["modelMs", "模型调用"],

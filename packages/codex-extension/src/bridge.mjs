@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { groupUsage, recordResult } from './usage.mjs';
+import { receivedQuote, quotesAssistant, quotedInput, inputChars, verifyAssistantQuote } from './quotes.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
   const url = new URL(value.baseUrl);
@@ -15,6 +16,7 @@ export function validateConfig(value, { bootstrap = false } = {}) {
       || !Array.isArray(group.senders) || !group.senders.length || group.senders.some(id => typeof id !== 'string' || !id || id === '*')
       || !['prefix', 'selective'].includes(group.mode) || (group.mode === 'prefix' && (typeof group.prefix !== 'string' || !group.prefix.trim()))) throw Error('Invalid exact group/sender policy');
     seen.add(group.id);
+    if (group.replyToAssistantQuotes !== undefined && typeof group.replyToAssistantQuotes !== 'boolean') throw Error('replyToAssistantQuotes must be boolean');
   }
   if (value.sendEnabled !== undefined && typeof value.sendEnabled !== 'boolean') throw Error('sendEnabled must be boolean');
   if (value.persistentConversations !== undefined && typeof value.persistentConversations !== 'boolean') throw Error('persistentConversations must be boolean');
@@ -36,7 +38,8 @@ export function replyKey(accountId, messageId, version) {
 
 export function messageFingerprint(message) {
   return createHash('sha256').update(JSON.stringify([message.id, message.accountId, message.threadId, message.serverId ?? null,
-    message.senderId, message.direction, message.type, message.body, message.createdAt, message.recall ?? null])).digest('hex');
+    message.senderId, message.direction, message.type, message.body, message.createdAt, message.recall ?? null,
+    ...(message.quote ? [message.appMessageType ?? null, message.quote] : [])])).digest('hex');
 }
 
 const terminal = new Set(['done', 'ignored', 'dry-run', 'rate-limited', 'generation-failed', 'generation-unknown']);
@@ -53,11 +56,29 @@ export class Bridge {
   }
   policy(message) {
     const group = this.config.groups.find(group => group.id === message.threadId);
+    const direct = group?.replyToAssistantQuotes === true && quotesAssistant(message, this.config.ownUsername);
+    const quote = group?.replyToAssistantQuotes === true && receivedQuote(message);
+    const senderAllowed = group?.senders.includes(message.senderId) || direct;
+    const typeAllowed = message.type === 1 || !!quote;
     if (message.accountId !== this.config.accountId || message.direction !== 'incoming' || message.senderId === this.config.ownUsername
-      || !group?.senders.includes(message.senderId) || message.type !== 1 || typeof message.body !== 'string' || !message.body.trim() || message.recall
+      || typeof message.senderId !== 'string' || !message.senderId
+      || !senderAllowed || !typeAllowed
+      || typeof message.body !== 'string' || (!message.body.trim() && !direct) || message.recall
       || !message.createdAt || Date.parse(message.createdAt) < Date.parse(this.store.data.activatedAt) || !Number.isFinite(Date.parse(message.createdAt))
       || this.now() - Date.parse(message.createdAt) > 300000 || Date.parse(message.createdAt) - this.now() > 60000) return null;
-    if (group.mode === 'prefix' && !message.body.trimStart().startsWith(group.prefix)) return null;
+    if (group.mode === 'prefix' && !message.body.trimStart().startsWith(group.prefix) && !direct) return null;
+    return group;
+  }
+  assistantQuote(message) {
+    return this.config.groups.some(group => group.id === message.threadId && group.replyToAssistantQuotes === true)
+      && quotesAssistant(message, this.config.ownUsername);
+  }
+  async eligible(message) {
+    const group = this.policy(message);
+    if (!group) return null;
+    if (this.assistantQuote(message) && !await verifyAssistantQuote(this.client, this.config, message, this.signal)) {
+      this.report({ event: 'quote.unverified' }); return null;
+    }
     return group;
   }
   async accept(event) {
@@ -66,14 +87,15 @@ export class Bridge {
     if (event.kind === 'message.committed' && event.data.origin === 'live'
       && this.config.groups.some(group => group.id === event.data.threadId)) {
       if (typeof event.data.messageId !== 'string') throw Error('Missing committed message ID');
+      const observedAt = this.now();
       const message = await this.client.message(this.config.accountId, event.data.messageId);
       if (message.id !== event.data.messageId || message.accountId !== this.config.accountId || message.threadId !== event.data.threadId) throw Error('Message/event identity mismatch');
-      if (this.policy(message)) {
+      if (await this.eligible(message)) {
         const key = replyKey(message.accountId, message.id, message.version);
         const tasks = Object.values(this.store.data.tasks);
         if (!tasks.some(task => (task.inputs ?? [task]).some(input => input.messageId === message.id))) {
-          const now = this.now();
-          const ref = { messageId: message.id, version: message.version, fingerprint: messageFingerprint(message), chars: Math.min(4000, message.body.length) };
+          const now = observedAt;
+          const ref = { messageId: message.id, version: message.version, fingerprint: messageFingerprint(message), chars: inputChars(message) };
           const batch = this.config.batchWindowMs > 0 && tasks.find(task => task.state === 'pending' && task.threadId === message.threadId
             && task.inputs && now - task.firstReceivedAt < this.config.batchMaxWaitMs
             && now - task.lastReceivedAt <= this.config.batchWindowMs && task.inputs.length < this.config.batchMaxMessages
@@ -120,7 +142,7 @@ export class Bridge {
     const messages = [];
     for (const ref of task.inputs ?? [task]) {
       const current = await this.client.message(this.config.accountId, ref.messageId);
-      if (!this.policy(current) || current.id !== ref.messageId || current.threadId !== task.threadId
+      if (!await this.eligible(current) || current.id !== ref.messageId || current.threadId !== task.threadId
         || (ref.fingerprint ? messageFingerprint(current) !== ref.fingerprint : current.version !== ref.version)) return null;
       messages.push(current);
     }
@@ -148,10 +170,12 @@ export class Bridge {
     const messages = await this.inputs(task);
     if (!messages?.length) { this.ignore(task); return; }
     const group = this.policy(messages[0]);
+    const replyRequired = messages.some(message => this.assistantQuote(message));
+    if (replyRequired) task.trigger = 'assistant-quote';
     if (task.state === 'sealed') {
       const usage = groupUsage(this.store.data, task.threadId);
       usage.callTimes = usage.callTimes.filter(at => at > now - 3600000);
-      const reason = usage.callTimes.length >= this.config.maxCallsPerHour ? 'hourly'
+      const reason = replyRequired ? null : usage.callTimes.length >= this.config.maxCallsPerHour ? 'hourly'
         : this.config.callIntervalMs > 0 && usage.lastCallAt !== null && now - usage.lastCallAt < this.config.callIntervalMs ? 'interval'
         : this.config.cooldownMs > 0 && now - (this.store.data.lastReply[task.threadId] ?? 0) < this.config.cooldownMs ? 'reply-cooldown' : null;
       if (reason) {
@@ -176,7 +200,7 @@ export class Bridge {
       this.store.save();
       let decision;
       try {
-        decision = await this.codex.answer({ history, messages: messages.map(message => ({ sender: message.senderId, text: message.body.slice(0, 4000), at: message.createdAt })), mode: group.mode }, this.config.persistentConversations ? {
+        decision = await this.codex.answer({ history, messages: messages.map(message => ({ sender: message.senderId, text: message.body.slice(0, 4000), at: message.createdAt, ...(quotedInput(message) ? { quote: quotedInput(message) } : {}) })), mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}) }, this.config.persistentConversations ? {
           persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
           onThread: info => {
             const existing = this.store.data.conversations[task.threadId];
@@ -195,6 +219,10 @@ export class Bridge {
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
       generated = true;
+      if (replyRequired && !decision.reply) {
+        decision = { ...decision, reply: true, text: '我看到了你引用的消息。你希望我解释或补充哪一部分？' };
+        task.replyFallback = true;
+      }
       if (!decision.reply) { usage.silentCalls++; this.ignore(task); await this.refreshContext(task.threadId); return; }
       task.reply = decision.text.trim(); task.state = 'prepared'; this.store.save();
     }

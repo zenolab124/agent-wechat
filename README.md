@@ -158,7 +158,8 @@ the checkout with these fields:
 | `baseUrl` | Explicit local daemon URL, such as `http://127.0.0.1:16174` |
 | `accountId`, `ownUsername` | Exact daemon account and authenticated WeChat identity |
 | `stateDir` | Absolute private worker directory, separate from the native profile |
-| `groups` | Array of `{ id, senders, mode, prefix? }`; exact ordinary-group IDs and sender IDs only |
+| `groups` | Array of `{ id, senders, mode, prefix?, replyToAssistantQuotes? }`; exact ordinary-group IDs and sender IDs only |
+| `replyToAssistantQuotes` | Per-group opt-in, false by default. Any member quoting a verified assistant message in this group triggers a reply, without prefix or ordinary chatter quota/silence gates |
 | `mode` | Per-group `prefix` requires the configured text prefix; `selective` answers concrete questions, explicit requests or related follow-ups without an @mention, and defaults to silence for small talk/statements |
 | `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
 | `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
@@ -215,11 +216,27 @@ identifier is not guessed. The prompt inspector shows this configured identity t
 The worker merges admitted incoming messages from the same group before model
 dispatch, retaining their order and sender IDs. It does not interrupt a generation
 already in progress; messages arriving during inference wait for the next poll and
-batch. Other groups and unapproved senders cannot join the batch. Each whole batch
+batch. Other groups cannot join; unapproved senders are ignored except for the
+explicit verified-assistant-quote route described below. Each whole batch
 consumes one model-call reservation, saved before dispatch. The interval/hour limits
-apply to all admitted senders and trigger modes. Rate-limited batches are discarded,
+apply to ordinary admitted senders and trigger modes; verified assistant quotes
+use the explicit exception below. Rate-limited batches are discarded,
 not delayed until their quota resets. Silent, failed and dry-run calls still count;
 the interval and rolling-hour timestamps survive worker restarts.
+
+With `replyToAssistantQuotes: true`, received WeChat quote replies (type 49,
+subtype 57) are admitted in that configured group. A quote of the assistant is
+verified against the canonical same-account/chat history before generation and
+again before sending, using at most 100 pages of 200 messages. The model receives
+the excerpt embedded in the quote, never a substituted original. An available,
+verified assistant quote is an explicit request from any group member, bypassing
+the sender/prefix and ordinary hourly/interval/cooldown gates while still counting
+all model usage. A silent model decision gets a short clarification reply. Missing,
+recalled or unverifiable originals cannot open this route. Other authors' quotes
+still follow the configured sender and normal reply policy. Bound text inputs and
+same-group send recovery still apply; network/model failures remain failures.
+This adds received-quote handling; the assistant's outgoing replies remain plain
+text and do not claim live validation of native quoted sends.
 
 Per-group usage records admitted/merged messages, calls, silent/failed/unknown calls,
 rate-limited batches and accepted replies. Token counts come from Codex's
@@ -242,7 +259,8 @@ usage unknown. Pending batch metadata contains message references and fingerprin
 not copies of settled chat text. Do not restore an older journal over later sends.
 
 Only fresh committed incoming text is eligible; self messages, catch-up/imports,
-old messages, recalls and other senders/groups are ignored. In the default temporary
+old messages, recalls and other groups are ignored. Sender exceptions require the
+opt-in verified-assistant-quote route. In the default temporary
 mode, history is fetched from the native store, with at most 12 messages from
 admitted senders. With `persistentConversations`, each group keeps one separate
 Codex thread and appends only newly admitted batches; earlier temporary calls and

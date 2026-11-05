@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Bridge, validateConfig, replyKey } from '../src/bridge.mjs';
 import { StateStore } from '../src/state.mjs';
 import { CodexClient, workerArgs } from '../src/codex.mjs';
+import { verifyAssistantQuote } from '../src/quotes.mjs';
 
 function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'wx-codex-test-'));
@@ -174,4 +175,69 @@ test('RPC diagnostics expose the failing method without copying private server e
   const rejected = client.request('account/read', { refreshToken: false });
   client.onMessage({ id: 1, error: { code: -32603, message: 'Private host timed out' } });
   await assert.rejects(rejected, error => error.accountReadTimeout === true && error.code === 'CODEX_ACCOUNT_READ_TIMEOUT' && !error.message.includes('Private host'));
+});
+
+function quoteFixture(t, groupPatch = {}) {
+  const f = fixture(t, { groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'prefix', prefix: '/助手', replyToAssistantQuotes: true, ...groupPatch }] });
+  const original = { id: 'source', accountId: f.config.accountId, threadId: 'test@chatroom', serverId: '20', senderId: 'bot', direction: 'outgoing', type: 1, body: 'stored original must not replace the excerpt' };
+  f.client.messages = async (_account, _thread, options) => ({ items: options.limit === 200 ? [original] : [] });
+  Object.assign(f.message, { type: 49, appMessageType: 57, body: '哈哈', senderId: 'another-member',
+    quote: { serverId: '20', senderId: 'bot', direction: 'outgoing', state: 'embedded', type: 1, embeddedText: 'quoted excerpt' } });
+  return { ...f, original };
+}
+
+test('any member in an enabled group can quote the assistant without a prefix, carrying the exact embedded excerpt', async t => {
+  const f = quoteFixture(t); await f.bridge.accept(f.event()); await f.bridge.drain();
+  assert.equal(f.calls.length, 1); assert.equal(f.generations[0].replyRequired, true);
+  assert.equal(f.generations[0].messages[0].quote.text, 'quoted excerpt');
+  assert.ok(!JSON.stringify(f.generations).includes(f.original.body));
+  assert.equal(Object.values(f.store.data.tasks)[0].trigger, 'assistant-quote');
+  await f.bridge.accept(f.event('2')); await f.bridge.drain(); assert.equal(f.calls.length, 1);
+});
+
+test('mandatory quote bypasses normal hourly/interval/cooldown gates and a silent model decision gets a clarification reply', async t => {
+  const f = quoteFixture(t); f.bridge.config.maxCallsPerHour = 1;
+  const quote = structuredClone(f.message);
+  Object.assign(f.message, { id: 'ordinary', type: 1, appMessageType: undefined, quote: undefined, senderId: 'human', body: '/助手 first' });
+  await f.bridge.accept(f.event()); await f.bridge.drain();
+  Object.assign(f.message, quote, { id: 'quote-followup' });
+  f.codex.answer = async context => { f.generations.push(context); return { reply: false }; };
+  await f.bridge.accept(f.event('2')); await f.bridge.drain();
+  assert.equal(f.calls.length, 2); assert.equal(f.generations.length, 2);
+  assert.match(f.calls[1][2], /你引用的消息/);
+  assert.equal(Object.values(f.store.data.tasks).at(-1).replyFallback, true);
+  assert.equal(f.store.data.usage.groups['test@chatroom'].rateLimitedBatches, 0);
+});
+
+test('quote opt-out, other authors, fake source identities, recall and unsupported subtype cannot open the mandatory route', async t => {
+  for (const mutate of [f => { f.bridge.config.groups[0].replyToAssistantQuotes = false; },
+    f => { f.message.quote.senderId = 'someone-else'; }, f => { f.original.senderId = 'someone-else'; },
+    f => { f.original.accountId = 'other'; }, f => { f.original.threadId = 'other@chatroom'; },
+    f => { f.original.recall = {}; }, f => { f.message.quote.state = 'recalled'; },
+    f => { f.message.appMessageType = 5; }, f => { f.message.quote.serverId = '0'; },
+    f => { Object.assign(f.message, { type: 1, quote: null, body: 'a concrete question?' }); }]) {
+    const f = quoteFixture(t); mutate(f); await f.bridge.accept(f.event()); await f.bridge.drain();
+    assert.equal(f.generations.length, 0); assert.equal(f.calls.length, 0);
+  }
+});
+
+test('verified quote-only messages still trigger a reply when the comment is empty', async t => {
+  const f = quoteFixture(t); f.message.body = '';
+  await f.bridge.accept(f.event()); await f.bridge.drain(); assert.equal(f.calls.length, 1);
+  assert.equal(f.generations[0].replyRequired, true); assert.equal(f.generations[0].messages[0].text, '');
+});
+
+test('a changed quote excerpt or recalled original during inference prevents sending the stale answer', async t => {
+  for (const mutate of [f => { f.message.quote.embeddedText = 'changed'; }, f => { f.original.recall = {}; }]) {
+    const f = quoteFixture(t); f.codex.answer = async () => { mutate(f); return { reply: true, text: 'stale' }; };
+    await f.bridge.accept(f.event()); await f.bridge.drain(); assert.equal(f.calls.length, 0);
+  }
+});
+
+test('quote identity lookup paginates without substituting source content and stops on a repeated cursor', async t => {
+  const f = quoteFixture(t); let reads = 0;
+  f.client.messages = async (_account, _thread, options) => { reads++; return options.cursor ? { items: [f.original], nextCursor: null } : { items: [], nextCursor: 'next' }; };
+  assert.equal(await verifyAssistantQuote(f.client, f.config, f.message), true); assert.equal(reads, 2);
+  f.client.messages = async () => ({ items: [], nextCursor: 'same' });
+  assert.equal(await verifyAssistantQuote(f.client, f.config, f.message), false);
 });

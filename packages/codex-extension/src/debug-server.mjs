@@ -142,6 +142,9 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
           maxCallsPerHour: config.maxCallsPerHour,
           batchWindowMs: config.batchWindowMs,
           pollIntervalMs: config.pollIntervalMs,
+          replyToAssistantQuotes:
+            config.groups.find((item) => item.id === group.id)
+              .replyToAssistantQuotes === true,
         },
         tasks: Object.values(state.tasks)
           .filter((task) => task.threadId === group.id)
@@ -156,6 +159,8 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
             limitReason: task.limitReason ?? null,
             usageReported: task.usageReported ?? null,
             timing: taskTiming(task),
+            trigger: task.trigger ?? null,
+            replyFallback: task.replyFallback === true,
           })),
       });
     } catch {

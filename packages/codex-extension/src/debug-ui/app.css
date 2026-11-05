@@ -242,6 +242,16 @@ input::placeholder {
   overflow-wrap: anywhere;
   font-size: 14px;
 }
+.message .quote {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .message .who strong {
   color: var(--primary);
   font-weight: 600;
