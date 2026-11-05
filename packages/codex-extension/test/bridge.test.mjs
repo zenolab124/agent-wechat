@@ -9,7 +9,7 @@ import { CodexClient, workerArgs } from '../src/codex.mjs';
 
 function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'wx-codex-test-'));
-  const config = { baseUrl: 'http://127.0.0.1:16174', accountId: 'account-test', ownUsername: 'bot', sendEnabled: true, cooldownMs: 1000,
+  const config = { baseUrl: 'http://127.0.0.1:16174', accountId: 'account-test', ownUsername: 'bot', sendEnabled: true, cooldownMs: 1000, batchWindowMs: 0, batchMaxWaitMs: 0, callIntervalMs: 1000,
     groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'prefix', prefix: '/助手' }], ...overrides };
   const binding = { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername };
   const store = new StateStore(directory, binding);
@@ -154,7 +154,7 @@ test('Codex only accepts completed final JSON and denies tool requests', async (
   client.onMessage({ method: 'item/completed', params: { threadId: 'thread', item: { type: 'agentMessage', phase: 'commentary', text: 'private reasoning' } } });
   client.onMessage({ method: 'item/completed', params: { threadId: 'thread', item: { type: 'agentMessage', phase: 'final_answer', text: '{"reply":true,"text":"final"}' } } });
   client.onMessage({ method: 'turn/completed', params: { threadId: 'thread', turn: { status: 'completed' } } });
-  assert.deepEqual(await final, { reply: true, text: 'final' });
+  assert.deepEqual(await final, { reply: true, text: 'final', usage: null });
   const args = workerArgs(['private-server']); assert.ok(args.includes('mcp_servers.private-server.enabled=false'));
   assert.ok(args.includes('features.shell_tool=false')); assert.ok(args.includes('features.apps=false'));
 });

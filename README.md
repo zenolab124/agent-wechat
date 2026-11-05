@@ -163,6 +163,11 @@ the checkout with these fields:
 | `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
 | `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
 | `cooldownMs` | Minimum interval between accepted replies per group; defaults to 10000 |
+| `callIntervalMs` | Minimum interval between model calls per group, including silent/failed calls; defaults to 30000 |
+| `maxCallsPerHour` | Maximum model calls per group in a rolling hour; defaults to 6, minimum 1 |
+| `batchWindowMs` | Collect consecutive messages until this much silence; defaults to 3000, 0 disables merging |
+| `batchMaxWaitMs` | Maximum collection time despite continuous traffic; defaults to 10000 |
+| `batchMaxMessages` | Maximum messages in one batch; defaults to 12, with an additional 8000-character input bound |
 | `codexBinary`, `model` | Optional executable/model overrides; omitted model uses the existing Codex default |
 
 After `pnpm --filter @agent-wechat/codex-extension... install --ignore-scripts`,
@@ -172,6 +177,7 @@ run the source CLI (no Rust or TypeScript build is required):
 node packages/codex-extension/src/cli.mjs doctor /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs codex-test /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs run /absolute/private/config.json
+node packages/codex-extension/src/cli.mjs usage /absolute/private/config.json
 ```
 
 Supply `AGENT_WECHAT_TOKEN` from the local credential store privately at launch;
@@ -184,6 +190,35 @@ twice using the same process and login. Authentication rejections and WeChat sen
 submissions are not retried.
 Before QR login, `doctor` and `codex-test` also accept an unconfigured identity
 with `groups: []`; `run` always requires the pinned identity and explicit groups.
+`usage` reads the private journal without a daemon token, model call or worker lock.
+Configuration is read at startup; restart only this worker after changing limits
+or group policies.
+
+The worker merges admitted incoming messages from the same group before model
+dispatch, retaining their order and sender IDs. It does not interrupt a generation
+already in progress; messages arriving during inference wait for the next poll and
+batch. Other groups and unapproved senders cannot join the batch. Each whole batch
+consumes one model-call reservation, saved before dispatch. The interval/hour limits
+apply to all admitted senders and trigger modes. Rate-limited batches are discarded,
+not delayed until their quota resets. Silent, failed and dry-run calls still count;
+the interval and rolling-hour timestamps survive worker restarts.
+
+Per-group usage records admitted/merged messages, calls, silent/failed/unknown calls,
+rate-limited batches and accepted replies. Token counts come from Codex's
+`thread/tokenUsage/updated` snapshots, not model-generated JSON or character estimates.
+`reportedTokens` sums only reported usage; `unknownUsageCalls` and
+`tokenUsageComplete` identify missing or interrupted measurements. Cached input is
+already included in input tokens, and reasoning in output tokens; neither is added
+twice to the reported total. Counts include Codex instructions/context, not just
+WeChat message text. No currency estimate or hard token-spending cap is provided.
+Statistics start when the v2 journal is initialized; old calls are not backfilled,
+and standalone `codex-test` calls are not assigned to a group.
+
+The v1 journal upgrade preserves existing cursors and send receipts. An inference
+left in `generating` after a crash is marked unknown and never automatically
+regenerated; its call reservation remains consumed. A crash can leave actual token
+usage unknown. Pending batch metadata contains message references and fingerprints,
+not copies of settled chat text. Do not restore an older journal over later sends.
 
 Only fresh committed incoming text is eligible; self messages, catch-up/imports,
 old messages, recalls and other senders/groups are ignored. History is fetched
