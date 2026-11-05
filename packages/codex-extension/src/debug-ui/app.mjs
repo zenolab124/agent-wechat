@@ -201,11 +201,13 @@ function render(data) {
     data.limits.callIntervalMs === 0
       ? "无固定调用间隔"
       : `${data.limits.callIntervalMs / 1000} 秒间隔`
-  } · ${data.limits.maxCallsPerHour} 次/小时 · ${
-    data.limits.batchWindowMs / 1000
-  } 秒合并`;
+  } · ${
+    data.limits.maxCallsPerHour > 0
+      ? `${data.limits.maxCallsPerHour} 次/小时`
+      : "无小时调用额度"
+  } · ${data.limits.batchWindowMs / 1000} 秒合并`;
   if (data.limits.replyToAssistantQuotes)
-    $("limits").textContent += " · 引用助手必回复，免普通接话配额拦截";
+    $("limits").textContent += " · 引用助手必回复";
   if (data.limits.receiveImagesAndStickers)
     $("limits").textContent +=
       " · 接收文字/图片/表情，纯表情只入上下文，过滤视频/语音/文件";

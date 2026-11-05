@@ -26,13 +26,13 @@ export function validateConfig(value, { bootstrap = false } = {}) {
   if (value.codexHome !== undefined && (typeof value.codexHome !== 'string' || !isAbsolute(value.codexHome))) throw Error('codexHome must be absolute');
   if (value.persistentConversations && !value.codexHome) throw Error('Persistent conversations require an explicit isolated Codex profile');
   if (value.cooldownMs !== undefined && (!Number.isSafeInteger(value.cooldownMs) || value.cooldownMs < 0)) throw Error('cooldownMs must be nonnegative');
-  const settings = { callIntervalMs: 30000, maxCallsPerHour: 6, batchWindowMs: 3000, batchMaxWaitMs: 10000, batchMaxMessages: 12, pollIntervalMs: 1000, ...value };
-  for (const [name, min, max] of [['callIntervalMs', 0, 3600000], ['maxCallsPerHour', 1, 10000], ['batchWindowMs', 0, 30000], ['batchMaxWaitMs', 0, 60000], ['batchMaxMessages', 1, 32], ['pollIntervalMs', 100, 10000]]) {
+  const settings = { callIntervalMs: 0, maxCallsPerHour: 0, batchWindowMs: 3000, batchMaxWaitMs: 10000, batchMaxMessages: 12, pollIntervalMs: 1000, ...value };
+  for (const [name, min, max] of [['callIntervalMs', 0, 3600000], ['maxCallsPerHour', 0, 10000], ['batchWindowMs', 0, 30000], ['batchMaxWaitMs', 0, 60000], ['batchMaxMessages', 1, 32], ['pollIntervalMs', 100, 10000]]) {
     if (!Number.isSafeInteger(settings[name]) || settings[name] < min || settings[name] > max) throw Error(`Invalid ${name}`);
   }
   if (settings.batchMaxWaitMs < settings.batchWindowMs) throw Error('batchMaxWaitMs must cover batchWindowMs');
   if (value.disabledMcp !== undefined && (!Array.isArray(value.disabledMcp) || value.disabledMcp.some(name => typeof name !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(name)))) throw Error('Invalid MCP names');
-  return { cooldownMs: 10000, ...settings, baseUrl: url.origin };
+  return { cooldownMs: 0, ...settings, baseUrl: url.origin };
 }
 
 export function replyKey(accountId, messageId, version) {
@@ -183,7 +183,7 @@ export class Bridge {
     if (task.state === 'sealed') {
       const usage = groupUsage(this.store.data, task.threadId);
       usage.callTimes = usage.callTimes.filter(at => at > now - 3600000);
-      const reason = replyRequired ? null : usage.callTimes.length >= this.config.maxCallsPerHour ? 'hourly'
+      const reason = replyRequired ? null : this.config.maxCallsPerHour > 0 && usage.callTimes.length >= this.config.maxCallsPerHour ? 'hourly'
         : this.config.callIntervalMs > 0 && usage.lastCallAt !== null && now - usage.lastCallAt < this.config.callIntervalMs ? 'interval'
         : this.config.cooldownMs > 0 && now - (this.store.data.lastReply[task.threadId] ?? 0) < this.config.cooldownMs ? 'reply-cooldown' : null;
       if (reason) {

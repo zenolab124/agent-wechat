@@ -11,6 +11,22 @@ import { groupUsage, tokenUsage, usageSnapshot } from '../src/usage.mjs';
 
 const sample = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 5, cacheWriteInputTokens: 0, totalTokens: 120 };
 
+test('default and explicit zero quotas allow more than six immediate calls, including after restart, without erasing usage', async t => {
+  for (const quota of [{}, { maxCallsPerHour: 0 }]) {
+    const f = harness(t, { batchWindowMs: 0, batchMaxWaitMs: 0, ...quota });
+    assert.equal(f.bridge.config.maxCallsPerHour, 0);
+    assert.equal(f.bridge.config.callIntervalMs, 0); assert.equal(f.bridge.config.cooldownMs, 0);
+    for (let n = 0; n < 8; n++) {
+      if (n === 7) f.restart();
+      await f.add(`unlimited-${n}`); await f.bridge.drain();
+    }
+    assert.equal(f.generations.length, 8); assert.equal(f.sends.length, 8);
+    const usage = f.data.usage.groups['a@chatroom'];
+    assert.equal(usage.callsStarted, 8); assert.equal(usage.callTimes.length, 8);
+    assert.equal(usage.rateLimitedBatches, 0); assert.equal(usage.tokens.totalTokens, 8 * sample.totalTokens);
+  }
+});
+
 function harness(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'wx-codex-batch-'));
   const config = { baseUrl: 'http://127.0.0.1:16174', accountId: 'account', ownUsername: 'bot', sendEnabled: true,
@@ -66,7 +82,7 @@ test('continuous traffic is bounded by maximum wait and maximum messages', async
 test('a batch cannot exceed its 8000-character input bound', async t => {
   const f = harness(t); await f.add('first', { text: 'a'.repeat(4000) }); await f.add('second', { text: 'b'.repeat(4000) }); await f.add('third', { text: 'c' });
   assert.equal(Object.keys(f.data.tasks).length, 2); f.advance(3000); await f.bridge.drain();
-  assert.equal(f.generations.length, 1); assert.equal(f.generations[0].messages.reduce((sum, m) => sum + m.text.length, 0), 8000);
+  assert.deepEqual(f.generations.map(context => context.messages.reduce((sum, m) => sum + m.text.length, 0)), [8000, 1]);
 });
 
 test('different groups keep independent batches and call quotas', async t => {
@@ -77,7 +93,7 @@ test('different groups keep independent batches and call quotas', async t => {
 });
 
 test('silence consumes quota and preflight rate limits run before history or model calls', async t => {
-  const f = harness(t); f.codex.answer = async context => { f.generations.push(context); return { reply: false, usage: sample }; };
+  const f = harness(t, { callIntervalMs: 30000 }); f.codex.answer = async context => { f.generations.push(context); return { reply: false, usage: sample }; };
   await f.add('first'); f.advance(3000); await f.bridge.drain();
   f.client.messages = async () => { throw Error('rate-limited input must not read history'); };
   await f.add('second'); f.advance(3000); await f.bridge.drain();
@@ -151,7 +167,7 @@ test('v1 upgrade keeps send recovery intact and does not invent historical token
 
 test('invalid rate and batching configuration is rejected rather than disabling controls', t => {
   const f = harness(t);
-  for (const patch of [{ maxCallsPerHour: 0 }, { callIntervalMs: -1 }, { batchWindowMs: Infinity }, { batchWindowMs: 4000, batchMaxWaitMs: 3000 }, { batchMaxMessages: 0 }]) assert.throws(() => validateConfig({ ...f.config, ...patch }));
+  for (const patch of [{ maxCallsPerHour: -1 }, { maxCallsPerHour: null }, { callIntervalMs: -1 }, { batchWindowMs: Infinity }, { batchWindowMs: 4000, batchMaxWaitMs: 3000 }, { batchMaxMessages: 0 }]) assert.throws(() => validateConfig({ ...f.config, ...patch }));
 });
 
 test('corrupted quota state is rejected instead of silently resetting usage', t => {

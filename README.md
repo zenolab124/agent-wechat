@@ -164,9 +164,9 @@ the checkout with these fields:
 | `mode` | Per-group `prefix` requires the configured text prefix; `selective` answers concrete questions, explicit requests or related follow-ups without an @mention, and defaults to silence for small talk/statements |
 | `sendEnabled` | Defaults to false; explicitly enable only for the selected test group |
 | `disabledMcp` | All configured and host-injected MCP server names; startup refuses tools that remain available |
-| `cooldownMs` | Minimum interval between accepted replies per group; defaults to 10000, 0 disables this cooldown |
-| `callIntervalMs` | Minimum interval between model calls per group, including silent/failed calls; defaults to 30000, 0 disables this interval |
-| `maxCallsPerHour` | Maximum model calls per group in a rolling hour; defaults to 6, minimum 1 |
+| `cooldownMs` | Optional minimum interval between accepted replies per group; defaults to 0 (disabled) |
+| `callIntervalMs` | Optional minimum interval between model calls per group, including silent/failed calls; defaults to 0 (disabled) |
+| `maxCallsPerHour` | Optional maximum model calls per group in a rolling hour; defaults to 0 (unlimited). Positive values explicitly enable a quota |
 | `batchWindowMs` | Collect consecutive messages until this much silence; defaults to 3000, 0 disables merging |
 | `batchMaxWaitMs` | Maximum collection time despite continuous traffic; defaults to 10000 |
 | `batchMaxMessages` | Maximum messages in one batch; defaults to 12, with an additional 8000-character input bound |
@@ -219,7 +219,8 @@ dispatch, retaining their order and sender IDs. It does not interrupt a generati
 already in progress; messages arriving during inference wait for the next poll and
 batch. Other groups cannot join; unapproved senders are ignored except for the
 explicit verified-assistant-quote route described below. Each whole batch
-consumes one model-call reservation, saved before dispatch. The interval/hour limits
+records one model-call reservation, saved before dispatch. There is no hourly quota,
+fixed call interval or reply cooldown by default. Explicitly configured interval/hour limits
 apply to ordinary admitted senders and trigger modes; verified assistant quotes
 use the explicit exception below. Rate-limited batches are discarded,
 not delayed until their quota resets. Silent, failed and dry-run calls still count;
@@ -321,8 +322,8 @@ time waiting before the model, the model call, and local observation of an accep
 send. Total latency starts at local message observation, not the phone's send time;
 old tasks without these measurements show unknown. Shorter batch/poll windows can
 reduce local waiting; model processing and network time remain variable. Set both
-`callIntervalMs` and `cooldownMs` to 0 to permit prompt follow-ups; hourly limits and
-same-group send recovery still apply.
+`callIntervalMs`, `cooldownMs` and `maxCallsPerHour` to 0 to disable those optional
+limits; same-group send recovery still applies. Usage statistics do not impose a quota.
 It reads existing Codex history through the authenticated local App Server without
 a model turn, daemon token, worker lock or additional chat archive. The endpoint binds only
 to IPv4 loopback, rejects cross-origin access and provides no send/edit controls.
