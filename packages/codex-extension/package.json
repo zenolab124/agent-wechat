@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/cli.mjs && node --check src/bridge.mjs && node --check src/codex.mjs && node --check src/state.mjs && node --check src/usage.mjs && node --check src/context-view.mjs && node --check src/instructions.mjs && node --check src/quotes.mjs && node --check src/message-content.mjs && node --check src/visuals.mjs && node --check src/debug-server.mjs && node --check src/debug-ui/app.mjs && node --check src/snap.mjs"
+    "check": "node --check src/cli.mjs && node --check src/bridge.mjs && node --check src/codex.mjs && node --check src/state.mjs && node --check src/usage.mjs && node --check src/context-view.mjs && node --check src/instructions.mjs && node --check src/quotes.mjs && node --check src/message-content.mjs && node --check src/visuals.mjs && node --check src/debug-server.mjs && node --check src/debug-ui/app.mjs && node --check src/snap.mjs && node --check src/decks.mjs"
   },
   "engines": {
     "node": ">=24.22.1"

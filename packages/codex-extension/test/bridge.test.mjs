@@ -357,3 +357,33 @@ test('a sticker batch containing a verified assistant quote retains its required
   assert.equal(f.calls.length, 1); assert.equal(f.generations[0].replyRequired, true); assert.equal(f.generations[0].observeOnly, undefined);
   assert.equal(Object.values(f.store.data.tasks)[0].replyFallback, true);
 });
+
+test('native @ conversion can bind only the requesting member latest recent image, then rechecks source and mention before send', async t => {
+ const f=fixture(t,{callIntervalMs:0,cooldownMs:0,snap:{defaultRegion:'cn',dataDir:'/private/synthetic-snap'},groups:[{id:'test@chatroom',senders:['human'],mode:'selective',receiveImagesAndStickers:true}]});
+ f.bridge.config.stateDir=f.directory;
+ Object.assign(f.message,{senderId:'outsider',body:'@助手 帮我把这张图转成卡组码',mentions:{state:'known',userIds:['bot'],self:true,all:false}});
+ const image={...f.message,id:'prior-image',type:3,body:null,mentions:{state:'known',userIds:[],self:false,all:false},createdAt:new Date(Date.parse(f.message.createdAt)-1000).toISOString()};
+ const foreign={...image,id:'foreign',senderId:'another',createdAt:f.message.createdAt};
+ f.client.message=async(a,id)=>id===image.id?image:f.message;
+ f.client.messages=async()=>({items:[foreign,image]});
+ const bytes=readFileSync(new URL('../../openclaw-extension/test/fixtures/native-model.png',import.meta.url));
+ f.client.mediaAssets=async(a,id)=>{assert.equal(id,image.id);return{items:[{id:'asset',accountId:f.config.accountId,messageId:id,kind:'image',state:'available',sha256:createHash('sha256').update(bytes).digest('hex'),byteLength:bytes.length}]}};
+ f.client.mediaContent=async()=>({bytes});
+ f.codex.answer=async(context,options)=>{f.generations.push(context);assert.equal(options.imagePaths.length,1);return{reply:true,text:'核对完成'}};
+ await f.bridge.accept(f.event());await f.bridge.drain();
+ assert.equal(f.calls.length,1);assert.equal(f.generations[0].deckImageRequest.authorized,true);assert.equal(f.generations[0].deckImageRequest.sourceMessageId,image.id);
+ assert.equal(Object.values(f.store.data.tasks)[0].trigger,'image-deck-request');
+ f.message.id='request-after-first'; f.codex.answer=async()=>{image.recall={replacementText:'recalled'};return{reply:true,text:'must not send recalled source'}};
+ await f.bridge.accept(f.event('2')); await f.bridge.drain(); assert.equal(f.calls.length,1); assert.equal(Object.values(f.store.data.tasks).at(-1).state,'ignored');
+});
+
+test('fake @ and @all cannot bypass normal sender policy; source recall or native mention changes suppress image-code sends', async t => {
+ for(const mentions of [undefined,{state:'known',userIds:[],all:true},{state:'unknown',userIds:['bot']},{state:'known',userIds:['other']}]){
+  const f=fixture(t,{snap:{defaultRegion:'cn',dataDir:'/private/synthetic-snap'},groups:[{id:'test@chatroom',senders:['human'],mode:'selective',receiveImagesAndStickers:true}]});
+  Object.assign(f.message,{senderId:'outsider',body:'@助手 帮我把这个转成卡组码',mentions});await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.generations.length,0);
+ }
+ const f=fixture(t,{snap:{defaultRegion:'cn',dataDir:'/private/synthetic-snap'},groups:[{id:'test@chatroom',senders:['human'],mode:'selective',receiveImagesAndStickers:true}]});
+ Object.assign(f.message,{body:'@助手 帮我把这个转成卡组码',mentions:{state:'known',userIds:['bot']}});
+ f.codex.answer=async()=>{f.message.mentions={state:'known',userIds:[]};return{reply:true,text:'must not send'}};
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.calls.length,0);
+});

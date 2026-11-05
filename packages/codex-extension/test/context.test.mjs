@@ -132,3 +132,12 @@ test('missing usage in a later SNAP stage is reported unknown instead of a parti
   };
   const result = await c.answer({}); assert.equal(result.modelRequests, 2); assert.equal(result.usage, null);
 });
+
+test('deck code output rejects model-invented codes and accepts only locally issued codes', async () => {
+ const ids=Array.from({length:12},(_,i)=>'Card'+i),code=Buffer.from(JSON.stringify({Cards:ids.map(CardDefId=>({CardDefId})),Name:''})).toString('base64');
+ for(const trusted of [false,true]){
+  let round=0;const c=new CodexClient({timeoutMs:1000,snapLookup:{defaultRegion:'cn',lookup:async()=>[{status:'ok',offline:true,decks:[{code}]}]}});
+  c.request=async(method)=>{if(method==='thread/start')return{thread:{id:'t'}};if(method==='turn/start'){const turnId=String(++round);const text=trusted&&round===1?JSON.stringify({lookup:[{kind:'decks',region:'cn'}]}):JSON.stringify({reply:true,text:code});c.onMessage({method:'item/completed',params:{threadId:'t',turnId,item:{type:'agentMessage',phase:'final_answer',text}}});c.onMessage({method:'turn/completed',params:{threadId:'t',turn:{id:turnId,status:'completed'}}});return{turn:{id:turnId}}}return{}};
+  const result=await c.answer({mode:'selective'});assert.equal(result.verifiedDeckCode===true,trusted);assert.equal(result.text.includes(code),trusted);
+ }
+});

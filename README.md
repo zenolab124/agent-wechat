@@ -366,6 +366,37 @@ this preserves history when resume parameters alone do not replace earlier
 instructions. The debug timeline shows query stages, selected records and source
 timestamps. These lookups do not enable arbitrary tools or network requests.
 
+Optional local deck data is installed in the same snapshot directory as
+`decks.json`, with `snapshot.json.decks` containing the approved public file's
+`region: "cn"`, `sha256`, `count` and `generatedAt`. The worker verifies the full
+file, each twelve-card composition and its composition key. It can search titles,
+include/exclude cards, show featured source statistics, decode official deck codes
+and find identical or similar compositions. Only CN public decks are connected;
+collection, votes and source rank do not establish current deck strength. Model
+answers can use only official-format codes issued by local lookup, not codes
+invented or modified by the model.
+
+For screenshot conversion, send an image and then natively mention the assistant
+with an explicit request, or quote that image and mention the assistant. A direct
+self-mention plus the request admits this operation from a member of an already
+configured group; normal unmentioned messages keep the existing sender policy.
+Literal `@name`, `@all` and unknown mention metadata do not qualify. The worker
+uses an image in the same sender's batch, an image embedded in the request's quote,
+or that sender's latest preceding image among 40 recent messages within five
+minutes. It checks account/chat/sender and recall/content again before sending;
+it does not pick another member's unquoted image. A missing image asks for one.
+This adds only operational source references to the journal, without another
+chat archive.
+
+The model marks each visible slot clear or uncertain. Twelve distinct collectible
+cards must match exact IDs or unambiguous names in the selected region's local
+catalog before the program encodes official UTF-8 JSON Base64. Uncertain, repeated,
+missing or foreign-region cards get a clarification without a code. Pictures and
+stickers without a requested native mention do not enable image conversion.
+Codes describe composition, not historic card effects; real screenshot recognition
+and game import need recipient acceptance. The debug page shows the trigger,
+source image, lookup stages and local code validation.
+
 Sends have stable keys; uncertain submissions are inspected, never blindly retried.
 An unresolved receipt holds subsequent replies in that group. A worker lock
 refuses concurrent owners; after an unclean exit, verify the recorded PID has

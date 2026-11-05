@@ -5,6 +5,7 @@ import { receivedQuote, quotesAssistant, quotedInput, inputChars, verifyAssistan
 import { describeMessage, isVisualMessage } from './message-content.mjs';
 import { prepareVisual } from './visuals.mjs';
 import { validateSnapConfig } from './snap.mjs';
+import { imageDeckRequest } from './decks.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
   validateSnapConfig(value.snap);
@@ -44,7 +45,7 @@ export function replyKey(accountId, messageId, version) {
 export function messageFingerprint(message) {
   return createHash('sha256').update(JSON.stringify([message.id, message.accountId, message.threadId, message.serverId ?? null,
     message.senderId, message.direction, message.type, message.body, message.createdAt, message.recall ?? null,
-    ...(message.quote ? [message.appMessageType ?? null, message.quote] : [])])).digest('hex');
+    ...(message.quote ? [message.appMessageType ?? null, message.quote] : []), message.mentions ?? null])).digest('hex');
 }
 
 const terminal = new Set(['done', 'ignored', 'dry-run', 'rate-limited', 'generation-failed', 'generation-unknown']);
@@ -65,7 +66,8 @@ export class Bridge {
     if (!content) return null;
     const direct = group?.replyToAssistantQuotes === true && quotesAssistant(message, this.config.ownUsername);
     const quote = group?.replyToAssistantQuotes === true && receivedQuote(message);
-    const senderAllowed = group?.senders.includes(message.senderId) || direct;
+    const deckRequest = !!group && !!this.config.snap && imageDeckRequest(message, this.config.ownUsername);
+    const senderAllowed = group?.senders.includes(message.senderId) || direct || deckRequest;
     const typeAllowed = message.type === 1 || !!quote || group?.receiveImagesAndStickers === true && isVisualMessage(message);
     if (message.accountId !== this.config.accountId || message.direction !== 'incoming' || message.senderId === this.config.ownUsername
       || typeof message.senderId !== 'string' || !message.senderId
@@ -73,7 +75,7 @@ export class Bridge {
       || (!content.text.trim() && !direct && !isVisualMessage(message)) || message.recall
       || !message.createdAt || Date.parse(message.createdAt) < Date.parse(this.store.data.activatedAt) || !Number.isFinite(Date.parse(message.createdAt))
       || this.now() - Date.parse(message.createdAt) > 300000 || Date.parse(message.createdAt) - this.now() > 60000) return null;
-    if (group.mode === 'prefix' && !content.text.trimStart().startsWith(group.prefix) && !direct) return null;
+    if (group.mode === 'prefix' && !content.text.trimStart().startsWith(group.prefix) && !direct && !deckRequest) return null;
     return group;
   }
   assistantQuote(message) {
@@ -103,16 +105,19 @@ export class Bridge {
         if (!tasks.some(task => (task.inputs ?? [task]).some(input => input.messageId === message.id))) {
           const now = observedAt;
           const visual = isVisualMessage(message);
-          const ref = { messageId: message.id, version: message.version, fingerprint: messageFingerprint(message), chars: inputChars(message), ...(visual ? { visual: true } : {}) };
+          const deckRequest = !!this.config.snap && imageDeckRequest(message, this.config.ownUsername);
+          const ref = { messageId: message.id, senderId: message.senderId, version: message.version, fingerprint: messageFingerprint(message), chars: inputChars(message), ...(visual ? { visual: true } : {}) };
           const batch = this.config.batchWindowMs > 0 && tasks.find(task => task.state === 'pending' && task.threadId === message.threadId
             && task.inputs && now - task.firstReceivedAt < this.config.batchMaxWaitMs
+            && (!task.imageDeckSender || task.imageDeckSender === message.senderId)
+            && (!deckRequest || task.inputs.every(ref => ref.senderId === message.senderId))
             && now - task.lastReceivedAt <= this.config.batchWindowMs && task.inputs.length < this.config.batchMaxMessages
             && task.inputs.filter(input => input.visual).length + Number(visual) <= 4
             && task.inputs.reduce((sum, input) => sum + input.chars, 0) + ref.chars <= 8000);
           const usage = groupUsage(this.store.data, message.threadId); usage.observedMessages++;
-          if (batch) { batch.inputs.push(ref); batch.lastReceivedAt = now; usage.mergedMessages++; }
+          if (batch) { batch.inputs.push(ref); batch.lastReceivedAt = now; if (deckRequest) batch.imageDeckSender = message.senderId; usage.mergedMessages++; }
           else this.store.data.tasks[key] = { key, messageId: message.id, version: message.version, threadId: message.threadId,
-            state: 'pending', inputs: [ref], firstReceivedAt: now, lastReceivedAt: now };
+            state: 'pending', inputs: [ref], firstReceivedAt: now, lastReceivedAt: now, ...(deckRequest ? { imageDeckSender: message.senderId } : {}) };
         }
       }
     }
@@ -155,6 +160,10 @@ export class Bridge {
         || (ref.fingerprint ? messageFingerprint(current) !== ref.fingerprint : current.version !== ref.version)) return null;
       messages.push(current);
     }
+    if (task.deckImageSource) {
+      const source = await this.client.message(this.config.accountId, task.deckImageSource.messageId);
+      if (source.accountId !== this.config.accountId || source.threadId !== task.threadId || source.senderId !== task.deckImageSource.senderId || source.direction !== 'incoming' || source.recall || messageFingerprint(source) !== task.deckImageSource.fingerprint) return null;
+    }
     return messages;
   }
   ignore(task) { task.state = 'ignored'; delete task.reply; this.store.save(); }
@@ -179,9 +188,10 @@ export class Bridge {
     const messages = await this.inputs(task);
     if (!messages?.length) { this.ignore(task); return; }
     const group = this.policy(messages[0]);
-    const replyRequired = messages.some(message => this.assistantQuote(message));
+    const conversionRequest = this.config.snap && messages.find(message => imageDeckRequest(message, this.config.ownUsername));
+    const replyRequired = !!conversionRequest || messages.some(message => this.assistantQuote(message));
     const observeOnly = !replyRequired && messages.every(message => describeMessage(message)?.kind === 'sticker');
-    if (replyRequired) task.trigger = 'assistant-quote';
+    if (replyRequired) task.trigger = conversionRequest ? 'image-deck-request' : 'assistant-quote';
     if (task.state === 'sealed') {
       const usage = groupUsage(this.store.data, task.threadId);
       usage.callTimes = usage.callTimes.filter(at => at > now - 3600000);
@@ -205,7 +215,21 @@ export class Bridge {
       await this.identity();
       if (!await this.inputs(task)) { this.ignore(task); return; }
       const modelMessages = []; const imagePaths = [];
-      for (const message of messages) {
+      let selectedImage;
+      if (conversionRequest) {
+        selectedImage = [...messages].reverse().find(message => message.senderId === conversionRequest.senderId && (describeMessage(message)?.kind === 'image' || message === conversionRequest && message.quote?.embeddedImage === true));
+        if (!selectedImage) {
+          const recent = await this.client.messages(this.config.accountId, task.threadId, {limit: 40});
+          selectedImage = recent.items.filter(message => message.accountId === this.config.accountId && message.threadId === task.threadId && message.senderId === conversionRequest.senderId && message.direction === 'incoming' && message.type === 3 && !message.recall && Date.parse(message.createdAt) <= Date.parse(conversionRequest.createdAt) && Date.parse(conversionRequest.createdAt)-Date.parse(message.createdAt) <= 300000).sort((a,b) => Date.parse(b.createdAt)-Date.parse(a.createdAt))[0];
+        }
+        if (selectedImage && !messages.some(message => message.id === selectedImage.id)) {
+          task.deckImageSource = {messageId:selectedImage.id,senderId:selectedImage.senderId,fingerprint:messageFingerprint(selectedImage)};
+          this.store.save();
+        }
+      }
+      let deckImageIndex;
+      const suppliedMessages = selectedImage && !messages.some(message => message.id === selectedImage.id) ? [...messages,selectedImage] : messages;
+      for (const message of suppliedMessages) {
         const content = describeMessage(message);
         const input = { sender: message.senderId, text: content.text, at: message.createdAt,
           ...(content.kind !== 'text' ? { kind: content.kind } : {}), ...(quotedInput(message) ? { quote: quotedInput(message) } : {}) };
@@ -215,7 +239,7 @@ export class Bridge {
           input.vision = { status: visual.status, ...(visual.status === 'ready' ? {
             imageIndex: imagePaths.length + 1, width: visual.width, height: visual.height, representation: visual.representation,
           } : {}) };
-          if (visual.status === 'ready') imagePaths.push(visual.path);
+          if (visual.status === 'ready') { imagePaths.push(visual.path); if (message.id === selectedImage?.id) deckImageIndex = imagePaths.length; }
         } else if (isVisualMessage(message)) {
           input.vision = { status: 'disabled' };
         }
@@ -231,7 +255,7 @@ export class Bridge {
       this.store.save();
       let decision;
       try {
-        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}) }, this.config.persistentConversations ? {
+        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}), ...(conversionRequest ? {deckImageRequest:{authorized:!!deckImageIndex,imageIndex:deckImageIndex??null,sender:conversionRequest.senderId,requestMessageId:conversionRequest.id,sourceMessageId:selectedImage?.id??null}} : {}) }, this.config.persistentConversations ? {
           imagePaths,
           persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
           onThread: info => {
@@ -243,7 +267,7 @@ export class Bridge {
           },
         } : { imagePaths });
         task.modelCompletedAt = this.now();
-        if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > 1600)) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
+        if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > (decision.verifiedDeckCode ? 6000 : 1600))) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
       } catch (error) {
         task.modelCompletedAt = this.now();
         recordResult(this.store.data, task, error.usage, 'failed'); task.state = 'generation-failed'; this.store.save();
@@ -251,6 +275,7 @@ export class Bridge {
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
       task.modelRequests = decision.modelRequests ?? 1;
+      if (decision.verifiedDeckCode) task.verifiedDeckCode = true;
       generated = true;
       if (observeOnly) {
         task.silenceReason = 'sticker-only';
@@ -258,7 +283,7 @@ export class Bridge {
         decision = { ...decision, reply: false };
       }
       if (replyRequired && !decision.reply) {
-        decision = { ...decision, reply: true, text: '我看到了你引用的消息。你希望我解释或补充哪一部分？' };
+        decision = { ...decision, reply: true, text: conversionRequest ? '请先发清晰的卡组图片，再原生@我请求转码；也可以引用原图并@我。看不清的卡牌请补充卡名。' : '我看到了你引用的消息。你希望我解释或补充哪一部分？' };
         task.replyFallback = true;
       }
       if (!decision.reply) { usage.silentCalls++; this.ignore(task); await this.refreshContext(task.threadId); return; }

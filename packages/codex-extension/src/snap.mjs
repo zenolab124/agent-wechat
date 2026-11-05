@@ -7,6 +7,12 @@ import {
   constants,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import {
+  validateDeckLookup,
+  parseDeckLibrary,
+  imageDeckCode,
+  queryDecks,
+} from "./decks.mjs";
 
 const LIMIT = 32 * 1024 * 1024;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -49,6 +55,13 @@ export function validateLookups(value) {
   if (!Array.isArray(value) || !value.length || value.length > 8)
     throw Error("Invalid SNAP lookup batch");
   for (const item of value) {
+    if (
+      item &&
+      ["decks", "decode_deck", "encode_image_deck"].includes(item.kind)
+    ) {
+      validateDeckLookup(item);
+      continue;
+    }
     if (
       !item ||
       Object.keys(item).some(
@@ -209,7 +222,7 @@ export function createSnapLookup({
   readFile = (name) => localBytes(snap.dataDir, name),
 } = {}) {
   validateSnapConfig(snap);
-  let catalog, ota;
+  let catalog, ota, decks, deckSource;
   function load() {
     if (catalog) return catalog;
     const snapshot = JSON.parse(readFile("snapshot.json"));
@@ -279,6 +292,29 @@ export function createSnapLookup({
       loadedOta = undefined;
     }
     ota = loadedOta;
+    if (snapshot.decks) {
+      try {
+        if (
+          snapshot.decks.region !== "cn" ||
+          !sha(snapshot.decks.sha256) ||
+          !Number.isSafeInteger(snapshot.decks.generatedAt)
+        )
+          throw Error("Invalid local decks reference");
+        const bytes = readFile("decks.json");
+        if (hash(bytes) !== snapshot.decks.sha256)
+          throw Error("Local decks integrity failed");
+        decks = parseDeckLibrary(JSON.parse(bytes), snapshot.decks.count);
+        deckSource = {
+          region: "cn",
+          generatedAt: snapshot.decks.generatedAt,
+          count: decks.length,
+          sha256: snapshot.decks.sha256,
+          offline: true,
+        };
+      } catch {
+        decks = undefined;
+      }
+    }
     catalog = {
       releaseId: manifest.releaseId,
       generatedAt: manifest.generatedAt,
@@ -290,15 +326,18 @@ export function createSnapLookup({
   }
   return {
     defaultRegion: snap.defaultRegion,
-    async lookup(requests) {
+    async lookup(requests, { imageDeckAllowed = false, imageDeckIndex } = {}) {
       validateLookups(requests);
       return requests.map((query) => {
         try {
-          if (query.region === "global" && query.kind !== "card")
+          if (
+            query.region === "global" &&
+            !["card", "encode_image_deck", "decode_deck"].includes(query.kind)
+          )
             return {
               query,
               status: "unsupported",
-              reason: "未接入可核验的国际服 OTA 离线资料，不借用国服记录。",
+              reason: "未接入该项国际服离线资料，不借用国服记录。",
             };
           const source = load(),
             regional = source.cards[query.region];
@@ -310,6 +349,35 @@ export function createSnapLookup({
             catalogSource: source.source,
             offline: true,
           };
+          if (query.kind === "encode_image_deck")
+            return {
+              query,
+              ...metadata,
+              ...imageDeckCode(
+                query,
+                regional,
+                imageDeckAllowed && query.imageIndex === imageDeckIndex
+              ),
+            };
+          if (query.kind === "decks" || query.kind === "decode_deck") {
+            if (query.kind === "decks" && !decks)
+              return {
+                query,
+                ...metadata,
+                status: "unavailable",
+                reason: "本机国服卡组库缺失或校验失败，不联网补值。",
+              };
+            return {
+              query,
+              ...metadata,
+              ...(query.region === "cn" ? { deckSource } : {}),
+              ...queryDecks(
+                query,
+                query.region === "cn" ? decks ?? [] : [],
+                regional
+              ),
+            };
+          }
           const records =
             query.region === "cn" && ota ? projectOta(ota.items, now()) : [];
           const otaMeta =

@@ -217,6 +217,7 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
             silenceReason: task.silenceReason ?? null,
             replySuppressed: task.replySuppressed === true,
             modelRequests: task.modelRequests ?? null,
+            verifiedDeckCode: task.verifiedDeckCode === true,
           })),
       });
     } catch {

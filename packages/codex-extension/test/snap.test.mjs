@@ -277,3 +277,38 @@ test("local snapshot reader rejects symlinks and works without any network clien
     "unavailable"
   );
 });
+
+test("missing or corrupt local deck library keeps card lookup usable and never falls back online", async () => {
+  const f = fixture();
+  const snapshot = JSON.parse(f.files["snapshot.json"]);
+  snapshot.decks = {
+    region: "cn",
+    sha256: "0".repeat(64),
+    count: 1,
+    generatedAt: 1000,
+  };
+  f.files["snapshot.json"] = JSON.stringify(snapshot);
+  f.files["decks.json"] = "{}";
+  const [deck, card] = await f.lookup.lookup([
+    { kind: "decks", region: "cn" },
+    query(),
+  ]);
+  assert.equal(deck.status, "unavailable");
+  assert.equal(deck.offline, true);
+  assert.equal(card.status, "ok");
+  const [denied] = await f.lookup.lookup(
+    [
+      {
+        kind: "encode_image_deck",
+        region: "cn",
+        imageIndex: 1,
+        cards: Array.from({ length: 12 }, () => ({
+          query: "Example",
+          confidence: "clear",
+        })),
+      },
+    ],
+    { imageDeckAllowed: true, imageDeckIndex: 2 }
+  );
+  assert.equal(denied.status, "denied");
+});

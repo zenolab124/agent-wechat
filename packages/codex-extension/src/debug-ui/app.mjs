@@ -33,6 +33,15 @@ const time = (value) => {
     ? d.toLocaleString("zh-CN", { hour12: false })
     : "";
 };
+const lookupLabel = (query) => {
+  if (query?.kind === "decks")
+    return `卡组搜索${query.query ? `：${query.query}` : ""}${
+      query.featured ? " · 天梯精选" : ""
+    }${query.include?.length ? ` · 包含${query.include.join("、")}` : ""}`;
+  if (query?.kind === "decode_deck") return "解析卡组码";
+  if (query?.kind === "encode_image_deck") return "截图转卡组码";
+  return query?.query ?? "最近 OTA";
+};
 function message(parent, role, text, at, sender, quote) {
   const box = el("div", undefined, `message ${role}`);
   const who = el("div", undefined, "who");
@@ -137,7 +146,7 @@ function renderTurns() {
             "source",
             `${result.query?.region === "cn" ? "国服" : "国际服"} · ${
               result.query?.kind ?? "查询"
-            } · ${result.query?.query ?? "最近 OTA"} · ${result.status}`
+            } · ${lookupLabel(result.query)} · ${result.status}`
           );
           const details = el("details");
           details.append(
@@ -162,9 +171,9 @@ function renderTurns() {
             `助手查询 SNAP 资料：${decision.lookup
               .map(
                 (item) =>
-                  `${item.region === "cn" ? "国服" : "国际服"} ${
-                    item.query ?? "最近 OTA"
-                  }`
+                  `${item.region === "cn" ? "国服" : "国际服"} ${lookupLabel(
+                    item
+                  )}`
               )
               .join("、")}`,
             "message silent"
@@ -278,6 +287,10 @@ function render(data) {
       )
     );
     if (task.sendId) row.append(el("small", `发送 ID：${task.sendId}`));
+    if (task.trigger === "image-deck-request")
+      row.append(el("small", "原生@助手并明确请求截图转码 · 同发言人图片绑定"));
+    if (task.verifiedDeckCode)
+      row.append(el("small", "回复中的卡组码已通过本地校验"));
     if (task.modelRequests)
       row.append(
         el("small", `实际模型请求：${task.modelRequests} 次（含资料查询阶段）`)
