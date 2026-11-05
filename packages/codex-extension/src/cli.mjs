@@ -7,10 +7,11 @@ import { Bridge, validateConfig } from './bridge.mjs';
 import { CodexClient } from './codex.mjs';
 import { StateStore } from './state.mjs';
 import { usageSnapshot } from './usage.mjs';
+import { writeContextView } from './context-view.mjs';
 
-const [command, configPath] = process.argv.slice(2);
-if (!['doctor', 'run', 'codex-test', 'usage'].includes(command) || !configPath) {
-  console.error('Usage: wx-codex doctor|run|codex-test|usage /absolute/private/config.json'); process.exit(2);
+const [command, configPath, requestedGroup] = process.argv.slice(2);
+if (!['doctor', 'run', 'codex-test', 'usage', 'context'].includes(command) || !configPath) {
+  console.error('Usage: wx-codex doctor|run|codex-test|usage|context /absolute/private/config.json [groupId]'); process.exit(2);
 }
 let store; let codex;
 const controller = new AbortController();
@@ -21,8 +22,18 @@ try {
     const snapshot = JSON.parse(readFileSync(join(config.stateDir, 'state.json'), 'utf8'));
     const binding = { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername };
     if (JSON.stringify(snapshot.binding) !== JSON.stringify(binding)) throw Error('Usage/account binding mismatch');
-    if (snapshot.schema !== 2 || !snapshot.usage?.groups) throw Error('Usage statistics have not been initialized');
+    if (![2, 3].includes(snapshot.schema) || !snapshot.usage?.groups) throw Error('Usage statistics have not been initialized');
     console.log(JSON.stringify(usageSnapshot(snapshot), null, 2));
+  } else if (command === 'context') {
+    delete process.env.AGENT_WECHAT_TOKEN;
+    const snapshot = JSON.parse(readFileSync(join(config.stateDir, 'state.json'), 'utf8'));
+    const binding = { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername };
+    if (JSON.stringify(snapshot.binding) !== JSON.stringify(binding)) throw Error('Context/account binding mismatch');
+    const group = requestedGroup ?? (config.groups.length === 1 ? config.groups[0].id : null);
+    if (!config.groups.some(item => item.id === group) || !snapshot.conversations?.[group]) throw Error('Select a configured group with an existing conversation');
+    codex = new CodexClient({ cwd: join(config.stateDir, 'worker'), binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome });
+    await codex.start();
+    console.log(JSON.stringify({ event: 'context.view', path: await writeContextView(codex, config.stateDir, group, snapshot.conversations[group]) }));
   } else {
     const token = process.env.AGENT_WECHAT_TOKEN;
     if (!token) throw Error('Provide the daemon token privately through AGENT_WECHAT_TOKEN');
@@ -35,14 +46,15 @@ try {
     } else {
       if (!config.stateDir || !config.stateDir.startsWith('/')) throw Error('An absolute private stateDir is required');
       const cwd = join(config.stateDir, 'worker'); mkdirSync(cwd, { recursive: true, mode: 0o700 });
-      codex = new CodexClient({ cwd, binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp });
+      codex = new CodexClient({ cwd, binary: config.codexBinary, model: config.model, disabledMcp: config.disabledMcp, codexHome: config.codexHome });
       await codex.start();
       if (command === 'codex-test') {
         const answer = await codex.answer({ history: [], message: { sender: 'local-test', text: '请回复：Codex 扩展连接成功。' }, mode: 'prefix' });
         console.log(JSON.stringify({ event: 'codex.test', answer }));
       } else {
         store = new StateStore(config.stateDir, { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername });
-        const bridge = new Bridge({ client, codex, store, config, signal: controller.signal, report: value => console.log(JSON.stringify(value)) });
+        const bridge = new Bridge({ client, codex, store, config, signal: controller.signal, report: value => console.log(JSON.stringify(value)),
+          afterAnswer: config.persistentConversations ? group => writeContextView(codex, config.stateDir, group, store.data.conversations[group]) : undefined });
         await bridge.identity();
         console.log(JSON.stringify({ event: 'worker.ready', sendEnabled: config.sendEnabled === true }));
         while (!controller.signal.aborted) {

@@ -169,6 +169,8 @@ the checkout with these fields:
 | `batchMaxWaitMs` | Maximum collection time despite continuous traffic; defaults to 10000 |
 | `batchMaxMessages` | Maximum messages in one batch; defaults to 12, with an additional 8000-character input bound |
 | `codexBinary`, `model` | Optional executable/model overrides; omitted model uses the existing Codex default |
+| `codexHome` | Absolute dedicated Codex configuration directory; authenticate it through official Codex login with the keyring credential store |
+| `persistentConversations` | Defaults to false. With user consent, keep one Codex thread per group; requires `codexHome` |
 
 After `pnpm --filter @agent-wechat/codex-extension... install --ignore-scripts`,
 run the source CLI (no Rust or TypeScript build is required):
@@ -178,6 +180,7 @@ node packages/codex-extension/src/cli.mjs doctor /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs codex-test /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs run /absolute/private/config.json
 node packages/codex-extension/src/cli.mjs usage /absolute/private/config.json
+node packages/codex-extension/src/cli.mjs context /absolute/private/config.json [groupId]
 ```
 
 Supply `AGENT_WECHAT_TOKEN` from the local credential store privately at launch;
@@ -193,6 +196,15 @@ with `groups: []`; `run` always requires the pinned identity and explicit groups
 `usage` reads the private journal without a daemon token, model call or worker lock.
 Configuration is read at startup; restart only this worker after changing limits
 or group policies.
+
+The group worker uses short chat instructions and disables development environment,
+permissions, collaboration, memory and skill prompt injection in its own process.
+Use a dedicated `codexHome` so global development instruction files are not loaded;
+the worker refuses inference if Codex still reports instruction-file sources.
+Authenticate that directory separately with official Codex login and the keyring
+credential store; do not copy authentication files. Everyday Codex configuration
+and login remain unchanged. An omitted model uses this isolated profile's default,
+so set `model` when keeping an existing model across the migration.
 
 The worker merges admitted incoming messages from the same group before model
 dispatch, retaining their order and sender IDs. It does not interrupt a generation
@@ -211,6 +223,9 @@ rate-limited batches and accepted replies. Token counts come from Codex's
 already included in input tokens, and reasoning in output tokens; neither is added
 twice to the reported total. Counts include Codex instructions/context, not just
 WeChat message text. No currency estimate or hard token-spending cap is provided.
+Persistent, tool-free turns use the notification's `last` request usage, so previous
+turn totals are not counted again. Repeated context can still contribute input
+tokens; cached input remains part of the reported input count.
 Statistics start when the v2 journal is initialized; old calls are not backfilled,
 and standalone `codex-test` calls are not assigned to a group.
 
@@ -221,9 +236,25 @@ usage unknown. Pending batch metadata contains message references and fingerprin
 not copies of settled chat text. Do not restore an older journal over later sends.
 
 Only fresh committed incoming text is eligible; self messages, catch-up/imports,
-old messages, recalls and other senders/groups are ignored. History is fetched
-from the native store, with at most 12 messages from admitted senders. The sidecar
-keeps cursors, pending reply work and receipts rather than a second chat archive.
+old messages, recalls and other senders/groups are ignored. In the default temporary
+mode, history is fetched from the native store, with at most 12 messages from
+admitted senders. With `persistentConversations`, each group keeps one separate
+Codex thread and appends only newly admitted batches; earlier temporary calls and
+unadmitted group traffic are not imported. Codex retains the assistant interactions,
+including silent decisions. Long histories may be compacted by Codex; stored history
+does not guarantee every old message remains verbatim in model context.
+
+The v3 sidecar preserves existing quotas, cursors and send receipts and adds only
+group-to-thread/profile bindings and message reference metadata. Canonical chat
+history stays in Codex. `context` reads its paginated history without a model turn,
+daemon token or worker lock, and writes a private Markdown viewing file. Omit the
+group ID only when exactly one group is configured. The worker refreshes this same
+view after each completed generation. It contains supplied chat instructions, user
+inputs and final decisions, excluding hidden reasoning and server instructions;
+send acceptance remains a separate receipt. Editing the view does not change model
+memory. Open the returned file in the desktop app's right panel. Isolated-profile
+threads are not assumed to appear in the everyday app sidebar.
+
 Sends have stable keys; uncertain submissions are inspected, never blindly retried.
 An unresolved receipt holds subsequent replies in that group. A worker lock
 refuses concurrent owners; after an unclean exit, verify the recorded PID has

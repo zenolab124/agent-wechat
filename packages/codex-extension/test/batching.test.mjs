@@ -146,7 +146,7 @@ test('v1 upgrade keeps send recovery intact and does not invent historical token
   const f = harness(t); const p = join(f.directory, 'state.json'); const old = JSON.parse(readFileSync(p));
   old.schema = 1; delete old.usage; old.tasks.legacy = { key: 'legacy', messageId: 'old', version: '1', threadId: 'a@chatroom', state: 'unknown' };
   writeFileSync(p, JSON.stringify(old)); f.restart();
-  assert.equal(f.data.schema, 2); assert.equal(f.data.tasks.legacy.state, 'unknown'); assert.deepEqual(usageSnapshot(f.data).groups, []);
+  assert.equal(f.data.schema, 3); assert.equal(f.data.tasks.legacy.state, 'unknown'); assert.deepEqual(usageSnapshot(f.data).groups, []);
 });
 
 test('invalid rate and batching configuration is rejected rather than disabling controls', t => {
@@ -168,4 +168,33 @@ test('local usage command reads a live locked journal without a daemon token or 
   const report = JSON.parse(result.stdout).groups[0];
   assert.equal(report.callsStarted, 1); assert.equal(report.reportedTokens.totalTokens, 120); assert.equal(report.tokenUsageComplete, true);
   assert.equal(JSON.parse(readFileSync(join(f.directory, 'worker.lock'))).pid, process.pid);
+});
+
+test('persistent group bindings survive restart and never share or replay native history', async t => {
+  const f = harness(t, { persistentConversations: true, codexHome: '/isolated/profile' });
+  f.codex.profile = '/isolated/profile'; const options = [];
+  f.client.messages = async () => { throw Error('Persistent turns must not replay native history'); };
+  f.codex.answer = async (context, opts) => {
+    options.push(structuredClone({ conversation: opts.conversation, persist: opts.persist }));
+    const id = opts.conversation?.threadId ?? `codex-thread-${options.length}`;
+    await opts.onThread({ threadId: id, profile: f.codex.profile });
+    f.generations.push(context); return { reply: true, text: 'reply', usage: sample };
+  };
+  await f.add('first'); f.advance(3000); await f.bridge.drain(); f.restart();
+  f.advance(30000); await f.add('second'); f.advance(3000); await f.bridge.drain();
+  await f.add('other-group', { group: 'b@chatroom' }); f.advance(3000); await f.bridge.drain();
+  assert.equal(options[1].conversation.threadId, 'codex-thread-1');
+  assert.equal(options[2].conversation, undefined);
+  assert.equal(f.data.conversations['b@chatroom'].threadId, 'codex-thread-3');
+  assert.ok(f.generations.every(item => item.history.length === 0 && item.messages.length === 1));
+  f.data.conversations['a@chatroom'].profile = '/wrong/profile';
+  f.advance(30000); await f.add('third'); f.advance(3000);
+  await assert.rejects(f.bridge.drain(), /profile mismatch/); assert.equal(options.length, 3);
+});
+
+test('v3 refuses a thread reused across groups and an invalid persistent-profile config', t => {
+  const f = harness(t);
+  for (const patch of [{ persistentConversations: 'true' }, { persistentConversations: true }, { codexHome: 'relative/path' }]) assert.throws(() => validateConfig({ ...f.config, ...patch }));
+  f.data.conversations = { 'a@chatroom': { threadId: 'shared', profile: '/isolated', seenMessageIds: [] }, 'b@chatroom': { threadId: 'shared', profile: '/isolated', seenMessageIds: [] } };
+  f.save(); assert.throws(() => f.restart(), /multiple groups/);
 });

@@ -15,13 +15,23 @@ export class StateStore {
       this.file = join(directory, 'state.json');
       try { this.data = JSON.parse(readFileSync(this.file, 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      this.data ??= { schema: 2, binding, cursor: '0', activatedAt: new Date().toISOString(), tasks: {}, lastReply: {}, usage: { since: new Date().toISOString(), groups: {} } };
-      if (![1, 2].includes(this.data.schema) || JSON.stringify(this.data.binding) !== JSON.stringify(binding)
+      this.data ??= { schema: 3, binding, cursor: '0', activatedAt: new Date().toISOString(), tasks: {}, lastReply: {}, conversations: {}, usage: { since: new Date().toISOString(), groups: {} } };
+      if (![1, 2, 3].includes(this.data.schema) || JSON.stringify(this.data.binding) !== JSON.stringify(binding)
         || !/^\d+$/.test(this.data.cursor) || !this.data.tasks || !this.data.lastReply
         || !Number.isFinite(Date.parse(this.data.activatedAt))) throw Error('State/account binding is invalid; refusing to reset');
       if (this.data.schema === 1) {
         this.data.schema = 2;
         this.data.usage = { since: new Date().toISOString(), groups: {} };
+      }
+      if (this.data.schema === 2) { this.data.schema = 3; this.data.conversations = {}; }
+      if (!this.data.conversations || Array.isArray(this.data.conversations) || typeof this.data.conversations !== 'object') throw Error('Invalid conversation registry');
+      const conversationIds = new Set();
+      for (const item of Object.values(this.data.conversations)) {
+        if (!item.threadId || typeof item.threadId !== 'string' || !item.profile || typeof item.profile !== 'string'
+          || !Array.isArray(item.seenMessageIds) || item.seenMessageIds.some(id => typeof id !== 'string')) throw Error('Invalid group conversation binding');
+        const key = JSON.stringify([item.profile, item.threadId]);
+        if (conversationIds.has(key)) throw Error('A Codex conversation cannot belong to multiple groups');
+        conversationIds.add(key);
       }
       if (!this.data.usage?.groups || Array.isArray(this.data.usage.groups) || typeof this.data.usage.groups !== 'object'
         || !Number.isFinite(Date.parse(this.data.usage.since))) throw Error('Invalid usage journal; refusing to reset limits');

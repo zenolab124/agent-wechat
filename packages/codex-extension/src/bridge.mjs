@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import { groupUsage, recordResult } from './usage.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
@@ -16,6 +17,9 @@ export function validateConfig(value, { bootstrap = false } = {}) {
     seen.add(group.id);
   }
   if (value.sendEnabled !== undefined && typeof value.sendEnabled !== 'boolean') throw Error('sendEnabled must be boolean');
+  if (value.persistentConversations !== undefined && typeof value.persistentConversations !== 'boolean') throw Error('persistentConversations must be boolean');
+  if (value.codexHome !== undefined && (typeof value.codexHome !== 'string' || !isAbsolute(value.codexHome))) throw Error('codexHome must be absolute');
+  if (value.persistentConversations && !value.codexHome) throw Error('Persistent conversations require an explicit isolated Codex profile');
   if (value.cooldownMs !== undefined && (!Number.isSafeInteger(value.cooldownMs) || value.cooldownMs < 1000)) throw Error('cooldownMs must be at least 1000');
   const settings = { callIntervalMs: 30000, maxCallsPerHour: 6, batchWindowMs: 3000, batchMaxWaitMs: 10000, batchMaxMessages: 12, ...value };
   for (const [name, min, max] of [['callIntervalMs', 1000, 3600000], ['maxCallsPerHour', 1, 10000], ['batchWindowMs', 0, 30000], ['batchMaxWaitMs', 0, 60000], ['batchMaxMessages', 1, 32]]) {
@@ -38,8 +42,8 @@ export function messageFingerprint(message) {
 const terminal = new Set(['done', 'ignored', 'dry-run', 'rate-limited', 'generation-failed', 'generation-unknown']);
 
 export class Bridge {
-  constructor({ client, codex, store, config, report = () => {}, signal, now = Date.now }) {
-    Object.assign(this, { client, codex, store, config: validateConfig(config), report, signal, now });
+  constructor({ client, codex, store, config, report = () => {}, afterAnswer, signal, now = Date.now }) {
+    Object.assign(this, { client, codex, store, config: validateConfig(config), report, afterAnswer, signal, now });
   }
   async identity() {
     this.signal?.throwIfAborted();
@@ -122,6 +126,10 @@ export class Bridge {
     return messages;
   }
   ignore(task) { task.state = 'ignored'; delete task.reply; this.store.save(); }
+  async refreshContext(threadId) {
+    try { await this.afterAnswer?.(threadId); }
+    catch { this.report({ event: 'context.view-unavailable' }); }
+  }
   async process(task) {
     await this.identity();
     if (['submitting', 'submitted', 'unknown'].includes(task.state)) {
@@ -132,7 +140,7 @@ export class Bridge {
     }
     if (Object.values(this.store.data.tasks).some(other => other !== task && other.threadId === task.threadId
       && ['submitting', 'submitted', 'unknown'].includes(other.state))) return;
-    const now = this.now();
+    const now = this.now(); let generated = false;
     if (task.state === 'pending' && task.inputs && task.inputs.length < this.config.batchMaxMessages
       && now - task.lastReceivedAt < this.config.batchWindowMs && now - task.firstReceivedAt < this.config.batchMaxWaitMs) return;
     if (task.state === 'pending') { task.state = 'sealed'; this.store.save(); }
@@ -150,7 +158,11 @@ export class Bridge {
         usage.rateLimitedBatches++; usage.rateLimitedMessages += messages.length;
         this.store.save(); this.report({ event: 'model.rate-limited', reason }); return;
       }
-      const page = await this.client.messages(this.config.accountId, task.threadId, { limit: 12 });
+      // A persistent group thread already carries its previous turns. Only append
+      // newly admitted batches; never replay the rolling WeChat window into it.
+      const conversation = this.config.persistentConversations ? this.store.data.conversations[task.threadId] : null;
+      if (conversation && conversation.profile !== this.codex.profile) throw Error('Group conversation profile mismatch');
+      const page = this.config.persistentConversations ? { items: [] } : await this.client.messages(this.config.accountId, task.threadId, { limit: 12 });
       const ids = new Set(messages.map(message => message.id));
       const history = page.items.filter(item => item.accountId === this.config.accountId && item.threadId === task.threadId && item.type === 1 && !item.recall && !ids.has(item.id)
         && (item.direction === 'incoming' && group.senders.includes(item.senderId) || item.direction === 'outgoing' && item.senderId === this.config.ownUsername))
@@ -162,17 +174,27 @@ export class Bridge {
       this.store.save();
       let decision;
       try {
-        decision = await this.codex.answer({ history, messages: messages.map(message => ({ sender: message.senderId, text: message.body.slice(0, 4000), at: message.createdAt })), mode: group.mode });
+        decision = await this.codex.answer({ history, messages: messages.map(message => ({ sender: message.senderId, text: message.body.slice(0, 4000), at: message.createdAt })), mode: group.mode }, this.config.persistentConversations ? {
+          persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
+          onThread: info => {
+            const existing = this.store.data.conversations[task.threadId];
+            if (existing && (existing.threadId !== info.threadId || existing.profile !== info.profile)) throw Error('Group conversation identity changed');
+            if (Object.entries(this.store.data.conversations).some(([groupId, other]) => groupId !== task.threadId && other.threadId === info.threadId && other.profile === info.profile)) throw Error('Conversation is already assigned to another group');
+            this.store.data.conversations[task.threadId] = { ...info, seenMessageIds: [...new Set([...(existing?.seenMessageIds ?? []), ...messages.map(message => message.id)])].slice(-2000) };
+            this.store.save();
+          },
+        } : {});
         if (typeof decision?.reply !== 'boolean' || decision.reply && (typeof decision.text !== 'string' || !decision.text.trim() || decision.text.length > 1600)) throw Object.assign(Error('Invalid bounded reply'), { usage: decision?.usage });
       } catch (error) {
         recordResult(this.store.data, task, error.usage, 'failed'); task.state = 'generation-failed'; this.store.save();
         this.report({ event: 'model.failed' }); throw error;
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
-      if (!decision.reply) { usage.silentCalls++; this.ignore(task); return; }
+      generated = true;
+      if (!decision.reply) { usage.silentCalls++; this.ignore(task); await this.refreshContext(task.threadId); return; }
       task.reply = decision.text.trim(); task.state = 'prepared'; this.store.save();
     }
-    if (!this.config.sendEnabled) { task.state = 'dry-run'; delete task.reply; this.store.save(); this.report({ event: 'reply.dry-run' }); return; }
+    if (!this.config.sendEnabled) { task.state = 'dry-run'; delete task.reply; this.store.save(); this.report({ event: 'reply.dry-run' }); if (generated) await this.refreshContext(task.threadId); return; }
     await this.identity();
     const recheck = await this.inputs(task);
     this.signal?.throwIfAborted();
@@ -180,5 +202,8 @@ export class Bridge {
     task.state = 'submitting'; this.store.save();
     try { await this.settle(task, await this.client.sendText(this.config.accountId, task.threadId, task.reply, task.key)); }
     catch { task.state = 'unknown'; this.store.save(); this.report({ event: 'reply.unknown' }); }
+    // Derive the optional view after saving generation and send state. A viewer
+    // failure must not delay sending or grant another model call.
+    if (generated) await this.refreshContext(task.threadId);
   }
 }
