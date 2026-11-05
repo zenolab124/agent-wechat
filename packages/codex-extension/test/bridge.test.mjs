@@ -286,3 +286,74 @@ test('visual batches split at four attachments while preserving admission order'
   for (let n = 1; n <= 5; n++) { f.message.id = `image-${n}`; await f.bridge.accept(f.event(String(n))); }
   assert.deepEqual(Object.values(f.store.data.tasks).map(task => task.inputs.length), [4, 1]);
 });
+
+function allowVisualRead(f) {
+  f.bridge.config.stateDir = f.directory;
+  const bytes = readFileSync(new URL('../../openclaw-extension/test/fixtures/native-model.png', import.meta.url));
+  f.client.mediaAssets = async (_account, messageId) => ({ items: [{ id: 'image', accountId: f.config.accountId, messageId,
+    kind: 'sticker', state: 'available', sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length }] });
+  f.client.mediaContent = async () => ({ bytes });
+}
+
+test('a standalone sticker is observed but cannot send even if the model replies; old prepared sticker replies are also suppressed', async t => {
+  for (const prepared of [false, true]) {
+    const f = fixture(t, { groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective', receiveImagesAndStickers: true }] });
+    Object.assign(f.message, { type: 47, body: null }); allowVisualRead(f);
+    await f.bridge.accept(f.event());
+    const task = Object.values(f.store.data.tasks)[0];
+    if (prepared) { task.state = 'prepared'; task.reply = 'old unsolicited explanation'; f.store.save(); }
+    await f.bridge.drain();
+    assert.equal(f.calls.length, 0); assert.equal(task.state, 'ignored'); assert.equal(task.silenceReason, 'sticker-only');
+    if (!prepared) {
+      assert.equal(f.generations[0].observeOnly, true); assert.equal(f.generations[0].messages[0].vision.status, 'ready');
+      assert.equal(task.replySuppressed, true); assert.equal(f.store.data.usage.groups['test@chatroom'].silentCalls, 1);
+    } else assert.equal(f.generations.length, 0);
+  }
+});
+
+test('a later text question resumes the same observed-sticker conversation and produces exactly one send', async t => {
+  const f = fixture(t, { persistentConversations: true, codexHome: '/isolated', callIntervalMs: 0, cooldownMs: 0,
+    groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective', receiveImagesAndStickers: true }] });
+  Object.assign(f.message, { type: 47, body: null }); allowVisualRead(f); f.codex.profile = '/isolated';
+  const options = [];
+  f.codex.answer = async (context, opts) => {
+    f.generations.push(context); options.push(opts);
+    await opts.onThread({ threadId: 'same-thread', profile: '/isolated' });
+    return context.observeOnly ? { reply: false } : { reply: true, text: 'explanation' };
+  };
+  await f.bridge.accept(f.event()); await f.bridge.drain();
+  Object.assign(f.message, { id: 'question', type: 1, body: '这个表情什么意思？' });
+  await f.bridge.accept(f.event('2')); await f.bridge.drain();
+  assert.equal(f.calls.length, 1); assert.equal(f.generations.length, 2);
+  assert.equal(options[0].imagePaths.length, 1); assert.equal(options[1].imagePaths.length, 0);
+  assert.equal(options[1].conversation.threadId, 'same-thread'); assert.equal(f.generations[1].observeOnly, undefined);
+});
+
+test('a merged sticker and text question can answer once instead of being marked observation-only', async t => {
+  const f = fixture(t, { batchWindowMs: 1000, batchMaxWaitMs: 3000,
+    groups: [{ id: 'test@chatroom', senders: ['human'], mode: 'selective', receiveImagesAndStickers: true }] });
+  allowVisualRead(f); Object.assign(f.message, { type: 47, body: null });
+  const rows = new Map([[f.message.id, structuredClone(f.message)]]);
+  f.client.message = async (_account, id) => rows.get(id);
+  await f.bridge.accept(f.event());
+  Object.assign(f.message, { id: 'question', type: 1, body: '这个表情什么意思？' }); rows.set(f.message.id, structuredClone(f.message));
+  await f.bridge.accept(f.event('2')); f.bridge.now = () => Date.now() + 1100; await f.bridge.drain();
+  assert.equal(f.calls.length, 1); assert.equal(f.generations.length, 1);
+  assert.equal(f.generations[0].messages.length, 2); assert.equal(f.generations[0].observeOnly, undefined);
+});
+
+test('a sticker batch containing a verified assistant quote retains its required reply', async t => {
+  const f = quoteFixture(t, { mode: 'selective', receiveImagesAndStickers: true });
+  f.bridge.config.batchWindowMs = 1000; f.bridge.config.batchMaxWaitMs = 3000; allowVisualRead(f);
+  const quote = structuredClone(f.message);
+  Object.assign(f.message, { id: 'sticker', type: 47, appMessageType: null, body: null, quote: null, senderId: 'human' });
+  const rows = new Map([[f.message.id, structuredClone(f.message)]]);
+  f.client.message = async (_account, id) => rows.get(id);
+  await f.bridge.accept(f.event());
+  Object.assign(f.message, quote); rows.set(f.message.id, structuredClone(f.message)); await f.bridge.accept(f.event('2'));
+  f.bridge.now = () => Date.now() + 1100;
+  f.codex.answer = async context => { f.generations.push(context); return { reply: false }; };
+  await f.bridge.drain();
+  assert.equal(f.calls.length, 1); assert.equal(f.generations[0].replyRequired, true); assert.equal(f.generations[0].observeOnly, undefined);
+  assert.equal(Object.values(f.store.data.tasks)[0].replyFallback, true);
+});

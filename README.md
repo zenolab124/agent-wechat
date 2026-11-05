@@ -284,7 +284,13 @@ restart of the source-run Codex worker.
 The extension accepts at most 16 MiB per source and 24 megapixels, makes a JPEG
 preview up to 1600 pixels per side and 5 MiB, and sends at most four images per
 model batch. GIF/animated stickers use the first frame; native still previews
-are labeled separately. A picture or sticker alone does not require a reply.
+are labeled separately. A picture alone does not require a reply. A batch containing
+only independent stickers is observation-only: the model receives the image in its
+group context but must return silence, and the worker suppresses any attempted reply.
+With `persistentConversations`, a subsequent text question can refer to that image.
+Mixed sticker/text batches still produce at most one answer; verified assistant quotes
+retain their required-reply
+policy. Observation-only calls still consume the ordinary call quota and token usage.
 
 Model previews are private derived attachments under `stateDir/model-images`,
 with files restricted to their owner. Persistent threads retain these paths so

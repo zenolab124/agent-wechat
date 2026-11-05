@@ -211,6 +211,8 @@ export async function startDebugServer({ config, codex, port = 16175 }) {
             timing: taskTiming(task),
             trigger: task.trigger ?? null,
             replyFallback: task.replyFallback === true,
+            silenceReason: task.silenceReason ?? null,
+            replySuppressed: task.replySuppressed === true,
           })),
       });
     } catch {

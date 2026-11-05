@@ -207,7 +207,8 @@ function render(data) {
   if (data.limits.replyToAssistantQuotes)
     $("limits").textContent += " · 引用助手必回复，免普通接话配额拦截";
   if (data.limits.receiveImagesAndStickers)
-    $("limits").textContent += " · 接收文字/图片/表情，过滤视频/语音/文件";
+    $("limits").textContent +=
+      " · 接收文字/图片/表情，纯表情只入上下文，过滤视频/语音/文件";
   $("polling").textContent = `${
     (data.limits.pollIntervalMs ?? 1000) / 1000
   } 秒`;
@@ -224,6 +225,14 @@ function render(data) {
       el("span", states[task.state] ?? task.state, "state"),
       document.createTextNode(` · ${task.messages} 条消息`)
     );
+    if (task.silenceReason === "sticker-only")
+      row.append(
+        el(
+          "div",
+          "纯表情：只保留上下文，不发送回复" +
+            (task.replySuppressed ? "（已拦截模型接话）" : "")
+        )
+      );
     row.append(
       el(
         "small",

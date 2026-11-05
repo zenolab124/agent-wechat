@@ -178,6 +178,7 @@ export class Bridge {
     if (!messages?.length) { this.ignore(task); return; }
     const group = this.policy(messages[0]);
     const replyRequired = messages.some(message => this.assistantQuote(message));
+    const observeOnly = !replyRequired && messages.every(message => describeMessage(message)?.kind === 'sticker');
     if (replyRequired) task.trigger = 'assistant-quote';
     if (task.state === 'sealed') {
       const usage = groupUsage(this.store.data, task.threadId);
@@ -228,7 +229,7 @@ export class Bridge {
       this.store.save();
       let decision;
       try {
-        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}) }, this.config.persistentConversations ? {
+        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}) }, this.config.persistentConversations ? {
           imagePaths,
           persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
           onThread: info => {
@@ -248,6 +249,11 @@ export class Bridge {
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
       generated = true;
+      if (observeOnly) {
+        task.silenceReason = 'sticker-only';
+        task.replySuppressed = decision.reply;
+        decision = { ...decision, reply: false };
+      }
       if (replyRequired && !decision.reply) {
         decision = { ...decision, reply: true, text: '我看到了你引用的消息。你希望我解释或补充哪一部分？' };
         task.replyFallback = true;
@@ -255,6 +261,8 @@ export class Bridge {
       if (!decision.reply) { usage.silentCalls++; this.ignore(task); await this.refreshContext(task.threadId); return; }
       task.reply = decision.text.trim(); task.state = 'prepared'; this.store.save();
     }
+    // Also cover a prepared sticker reply left by an earlier worker version.
+    if (observeOnly) { task.silenceReason = 'sticker-only'; this.ignore(task); return; }
     if (!this.config.sendEnabled) { task.state = 'dry-run'; delete task.reply; this.store.save(); this.report({ event: 'reply.dry-run' }); if (generated) await this.refreshContext(task.threadId); return; }
     await this.identity();
     const recheck = await this.inputs(task);
