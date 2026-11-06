@@ -3,8 +3,35 @@ import assert from 'node:assert/strict';
 import { CodexClient } from '../src/codex.mjs';
 import { renderContext } from '../src/context-view.mjs';
 import { outputInstructions, OUTPUT_INSTRUCTIONS } from '../src/instructions.mjs';
+import { encodeDeck, textDeckCode } from '../src/decks.mjs';
 
 const usage = n => ({ inputTokens: n, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0, cacheWriteInputTokens: 0, totalTokens: n + 10 });
+
+test('text edits return the canonical new code once in the same thread and cannot borrow image permission',async()=>{
+ const cards=Array.from({length:13},(_,i)=>({key:'Card'+i,name:'卡'+i,collectible:true}));
+ const q={kind:'edit_deck',region:'cn',code:encodeDeck(cards.slice(0,12).map(c=>c.key)),replacements:[{from:'Card0',to:'Card12'}]};
+ const options=[],injected=[];let rounds=0;
+ const c=new CodexClient({timeoutMs:1000,snapLookup:{defaultRegion:'cn',lookup:async(queries,o)=>{options.push(o);return queries.map(query=>({query,...textDeckCode(query,cards,o.textDeckAllowed)}));}}});
+ c.request=async(method,p)=>{
+  if(method==='thread/resume')return {thread:{id:'original'},instructionSources:[]};
+  if(method==='thread/inject_items')injected.push(p);
+  if(method==='turn/start'){
+   const turnId=String(++rounds),decision=rounds===1?{lookup:[q]}:{reply:true,text:'请补充完整文字卡名。'};
+   c.onMessage({method:'item/completed',params:{threadId:'original',turnId,item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify(decision)}}});
+   c.onMessage({method:'turn/completed',params:{threadId:'original',turn:{id:turnId,status:'completed'}}});return{turn:{id:turnId}};
+  }return{};
+ };
+ const persist={persist:true,conversation:{threadId:'original',profile:c.profile},onThread:()=>{}};
+ const result=await c.answer({messages:[{text:'把上一套的卡0换成卡12，给我新码'}]},persist);
+ assert.equal(result.verifiedDeckCode,true);assert.equal(result.modelRequests,1);assert.equal(options[0].textDeckAllowed,true);
+ assert.equal(result.text,textDeckCode(q,cards,true).replyText);
+ assert.equal(JSON.parse(injected.at(-1).items[1].content[0].text).text,result.text);
+ for(const message of [{text:'帮我把这张图片转成卡组码'},{text:'把卡0换成卡12，给我新码',quote:{type:3},vision:{status:'ready',imageIndex:1}}]){
+  rounds=0;options.length=0;
+  await c.answer({messages:[message],deckImageRequest:{authorized:true,imageIndex:1}},persist);
+  assert.equal(options[0].textDeckAllowed,false);assert.equal(options[0].imageDeckAllowed,true);
+ }
+});
 
 test('persistent turns resume the same thread and account only their own usage, including early notifications', async () => {
   const c = new CodexClient({ codexHome: '/isolated', model: 'test-model', timeoutMs: 1000 }); const requests = [];

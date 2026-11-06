@@ -558,6 +558,23 @@ collection, votes and source rank do not establish current deck strength. Model
 answers can use only official-format codes issued by local lookup, not codes
 invented or modified by the model.
 
+Text lists can also become codes: provide twelve card names and ask
+`把这些文字卡名生成卡组码`. To edit a deck, paste its official code or refer to
+the previous deck in the group and say `把甲换成乙，给我新码`. No mention is
+required for admitted senders. The worker checks twelve distinct collectible
+cards against the selected region's local catalog and issues the full code itself.
+Ambiguous names, missing source decks, absent outgoing cards and duplicate
+results prompt a specific clarification; it does not substitute a similar deck.
+
+The lookup operations are `encode_text_deck` with `region`, twelve `cards`
+(names or IDs), and optional `name`; and `edit_deck` with `region`, original
+`code`, one to twelve `replacements: [{from, to}]`, and optional `name`.
+Replacements apply together to the original composition. Successful output is
+recorded in the same group conversation, so the next edit uses the new code.
+Text requests do not select an unrelated recent screenshot, and image conversion
+still uses its separate source and recognition checks. These operations use local
+files and do not modify the shared library, game decks or account data.
+
 For screenshot conversion, send an image and say `转卡组码`, or quote the image
 with that request. A native mention is optional for admitted senders. A request
 can use its sole same-sender image in the batch, or a single verified recent

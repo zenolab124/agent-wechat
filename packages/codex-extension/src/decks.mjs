@@ -18,6 +18,10 @@ export function validateDeckLookup(item) {
         ]
       : item.kind === "decode_deck"
       ? ["kind", "region", "query"]
+      : item.kind === "encode_text_deck"
+      ? ["kind", "region", "cards", "name"]
+      : item.kind === "edit_deck"
+      ? ["kind", "region", "code", "replacements", "name"]
       : ["kind", "region", "cards", "name", "imageIndex"];
   if (Object.keys(item).some((key) => !allowed.includes(key)))
     throw Error("Invalid deck lookup fields");
@@ -50,6 +54,41 @@ export function validateDeckLookup(item) {
       item.query.length > 12000
     )
       throw Error("Invalid deck code");
+  } else if (["encode_text_deck", "edit_deck"].includes(item.kind)) {
+    const cardName = (s) =>
+      typeof s === "string" && !!s.trim() && s.length <= 100;
+    if (
+      item.name !== undefined &&
+      (typeof item.name !== "string" || item.name.length > 80)
+    )
+      throw Error("Invalid deck name");
+    if (item.kind === "encode_text_deck") {
+      if (
+        !Array.isArray(item.cards) ||
+        item.cards.length !== 12 ||
+        !item.cards.every(cardName)
+      )
+        throw Error("Text deck requires twelve card names or IDs");
+    } else if (
+      typeof item.code !== "string" ||
+      !item.code.trim() ||
+      item.code.length > 12000 ||
+      !Array.isArray(item.replacements) ||
+      !item.replacements.length ||
+      item.replacements.length > 12 ||
+      item.replacements.some(
+        (r) =>
+          !r ||
+          typeof r !== "object" ||
+          Array.isArray(r) ||
+          Object.keys(r).some((k) => !["from", "to"].includes(k)) ||
+          !cardName(r.from) ||
+          !cardName(r.to)
+      )
+    )
+      throw Error(
+        "Deck edit requires a base code and one to twelve replacements"
+      );
   } else if (item.kind === "encode_image_deck") {
     if (
       !Number.isInteger(item.imageIndex) ||
@@ -184,6 +223,8 @@ export function imageDeckRequest(message, ownUsername) {
       command
     );
   return (
+    // A textual list/code or a swap request must not bind a recent unrelated image.
+    (!textDeckRequest(command) || message.quote?.embeddedImage === true) &&
     !(
       message.mentions?.state === "known" &&
       message.mentions.userIds?.length > 0 &&
@@ -199,6 +240,34 @@ export function imageDeckRequest(message, ownUsername) {
       message.body
     ) ||
       shortRequest)
+  );
+}
+// Current text intent only. Images still use the independently checked image path.
+export function textDeckRequest(text) {
+  if (
+    typeof text !== "string" ||
+    /(?:不要|不用|不必|无需|先不|别).{0,12}(?:转|生成|做|给|换|改|组|配)/.test(
+      text
+    )
+  )
+    return false;
+  if (
+    /(?:这|那|此|原|上|下|张|截|附)\s*(?:张)?图|图片|截图|照片|截屏|图中|图里|图上|图内|看图/.test(
+      text
+    )
+  )
+    return false;
+  if (/(?:换成|换为|换掉|替换|替代|改成|改为|(?:把|将).{1,40}换)/.test(text))
+    return true;
+  const request =
+    /(?:转|生成|做成|给|编|组|配|构筑|补齐).{0,30}(?:卡组|套牌|牌组|码)|(?:卡组|套牌|牌组).{0,20}(?:码|组|配|构筑|补齐)/.test(
+      text
+    );
+  return (
+    request &&
+    (!!decodeDeck(text) ||
+      /文字|卡名|十二张|12\s*张|补齐|组一套|组个|配一套|构筑一套/.test(text) ||
+      (text.match(/[、,，;；\n]/g)?.length ?? 0) >= 10)
   );
 }
 export function resolveCard(cards, query) {
@@ -230,6 +299,134 @@ function resolveSearchCard(cards, query) {
       )
   );
   return found.length === 1 ? found[0] : null;
+}
+function clarifyCard(cards, query) {
+  const q = normalizeCardName(query);
+  return cards
+    .filter(
+      (c) =>
+        c.collectible &&
+        q &&
+        [c.key, c.name, c.englishName].some(
+          (n) => n && normalizeCardName(n).includes(q)
+        )
+    )
+    .slice(0, 8)
+    .map((c) => ({ key: c.key, name: c.name ?? c.key }));
+}
+export function textDeckCode(request, cards, allowed) {
+  if (!allowed)
+    return {
+      status: "denied",
+      reason:
+        "请明确提出文字组卡、换卡或生成卡组码的请求；图片转码仍须核对原图。",
+    };
+  const decoded =
+    request.kind === "edit_deck" ? decodeDeck(request.code) : null;
+  if (request.kind === "edit_deck" && !decoded)
+    return {
+      status: "invalid-code",
+      reason:
+        "原卡组码不是完整的十二张不同卡牌，请提供原码或明确的十二张文字卡名。",
+    };
+  const names = decoded ? decoded.ids : request.cards;
+  const resolved = names.map((q) =>
+    decoded ? cards.find((c) => c.key === q) : resolveSearchCard(cards, q)
+  );
+  const unresolved = names.flatMap((query, i) =>
+    !resolved[i]?.collectible
+      ? [{ slot: i + 1, query, candidates: clarifyCard(cards, query) }]
+      : []
+  );
+  if (unresolved.length)
+    return {
+      status: "needs-clarification",
+      unresolved,
+      reason:
+        "这些卡无法在本服目录中唯一核对；只需澄清对应位置，不从另一服补值。",
+    };
+  const original = resolved.map((c) => c.key);
+  if (!completeDeck(original))
+    return {
+      status: "invalid-composition",
+      reason: "文字清单包含重复卡牌，需要十二张不同的可收集卡。",
+    };
+  const replacements = [];
+  for (const change of request.replacements ?? []) {
+    const from = resolveSearchCard(cards, change.from),
+      to = resolveSearchCard(cards, change.to);
+    if (!from?.collectible || !to?.collectible)
+      return {
+        status: "needs-clarification",
+        change,
+        candidates: {
+          from: clarifyCard(cards, change.from),
+          to: clarifyCard(cards, change.to),
+        },
+        reason: "换出的卡或换入的卡无法在本服唯一核对，请澄清卡名。",
+      };
+    if (!original.includes(from.key))
+      return {
+        status: "invalid-replacement",
+        reason: `原卡组没有${from.name ?? from.key}，未执行换卡。`,
+      };
+    if (replacements.some((r) => r.from.key === from.key))
+      return {
+        status: "invalid-replacement",
+        reason: "同一张原卡被重复指定换出，未执行换卡。",
+      };
+    if (from.key === to.key)
+      return {
+        status: "invalid-replacement",
+        reason: "换入和换出的是同一张卡，未执行换卡。",
+      };
+    replacements.push({ from, to });
+  }
+  // All replacements refer to the original deck, so simultaneous swaps never cascade.
+  const ids = original.map(
+    (id) => replacements.find((r) => r.from.key === id)?.to.key ?? id
+  );
+  if (!completeDeck(ids))
+    return {
+      status: "invalid-composition",
+      reason:
+        "换卡后会出现重复卡牌，未生成新码；请换成另一张卡或明确同时换出已有的那张卡。",
+    };
+  const name = request.name ?? decoded?.name ?? "文字卡组";
+  const code = encodeDeck(ids, name),
+    finalCards = ids.map((id) => cards.find((c) => c.key === id));
+  return {
+    status: "ok",
+    offline: true,
+    code,
+    cardIds: ids,
+    cards: finalCards.map((c) => ({ key: c.key, name: c.name ?? c.key })),
+    ...(decoded
+      ? {
+          baseCardIds: original,
+          replacements: replacements.map((r) => ({
+            from: { key: r.from.key, name: r.from.name },
+            to: { key: r.to.key, name: r.to.name },
+          })),
+        }
+      : {}),
+    replyText: `${request.region === "cn" ? "国服" : "国际服"} · ${
+      decoded ? "换卡完成" : "已核对12张卡"
+    }${
+      replacements.length
+        ? "：" +
+          replacements
+            .map(
+              (r) => `${r.from.name ?? r.from.key} → ${r.to.name ?? r.to.key}`
+            )
+            .join("；")
+        : ""
+    }\n${finalCards
+      .map((c, i) => `${i + 1}. ${c.name ?? c.key}`)
+      .join(
+        "\n"
+      )}\n\n${code}\n\n复制上面的整行卡组码，在游戏收藏的卡组页面粘贴导入。`,
+  };
 }
 export function parseDeckLibrary(body, count) {
   if (

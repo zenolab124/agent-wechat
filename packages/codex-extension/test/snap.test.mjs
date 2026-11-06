@@ -126,6 +126,50 @@ const query = (region = "cn", kind = "card", name = "Example") => ({
   ...(kind === "latest_changes" ? {} : { query: name }),
 });
 
+test("text encoding and edits use the selected offline catalog without requiring a deck library or image permission", async () => {
+  const f = fixture();
+  const ids = Array.from({ length: 13 }, (_, i) => "Local" + i);
+  f.cards.push(
+    ...ids.map((key, i) =>
+      card(key, {
+        cn: { name: "本地" + i, isCollectible: true },
+        global: { name: "Global " + i, isCollectible: true },
+      })
+    )
+  );
+  const file = f.manifest.artifacts.cards.immutablePath;
+  f.files[file] = JSON.stringify(f.cards);
+  f.manifest.artifacts.cards.sha256 = digest(f.files[file]);
+  f.manifest.artifacts.cards.count = f.cards.length;
+  f.seal();
+  const q = { kind: "encode_text_deck", region: "cn", cards: ids.slice(0, 12) };
+  assert.equal((await f.lookup.lookup([q]))[0].status, "denied");
+  const [encoded] = await f.lookup.lookup([q], { textDeckAllowed: true });
+  assert.equal(encoded.status, "ok");
+  assert.equal(encoded.offline, true);
+  assert.equal(encoded.cards[0].name, "本地0");
+  const edit = {
+    kind: "edit_deck",
+    region: "cn",
+    code: encoded.code,
+    replacements: [{ from: "本地0", to: "本地12" }],
+  };
+  const [changed] = await f.lookup.lookup([edit], { textDeckAllowed: true });
+  assert.equal(changed.status, "ok");
+  assert.equal(changed.cardIds[0], "Local12");
+  const [global] = await f.lookup.lookup([{ ...q, region: "global" }], {
+    textDeckAllowed: true,
+  });
+  assert.equal(global.status, "ok");
+  assert.equal(global.cards[0].name, "Global 0");
+  const [foreign] = await f.lookup.lookup(
+    [{ ...q, cards: [...ids.slice(1, 12), "Global 0"] }],
+    { textDeckAllowed: true }
+  );
+  assert.equal(foreign.status, "needs-clarification");
+  assert.throws(() => validateLookups([q, edit]), /One deck encoding/);
+});
+
 test("SNAP accepts only local configuration and rejects model-selected sources or malformed lookups", () => {
   validateSnapConfig(snap);
   validateLookups([query()]);
@@ -386,6 +430,22 @@ test("optional knowledge integrity failure cannot borrow another region or break
   assert.equal(f.reads.length, before);
 });
 
-test('prefetch returns current verified regional card facts and refreshes time-dependent OTA status without external access',async()=>{
- const f=fixture();const results=await f.lookup.prefetch([{text:'国服样例牌现在什么效果？'}]);assert.equal(results[0].query.kind,'card');assert.equal(results[0].query.region,'cn');assert.equal(results[0].cards[0].key,'Example');assert.equal(results[0].offline,true);f.clock(2000);const active=await f.lookup.prefetch([{text:'国服样例牌现在什么效果？'}]);assert.equal(active[0].changes[0].status,'temporary-active');assert.deepEqual(await f.lookup.prefetch([{text:'国际服样例牌现在什么效果？'}]),[]);
+test("prefetch returns current verified regional card facts and refreshes time-dependent OTA status without external access", async () => {
+  const f = fixture();
+  const results = await f.lookup.prefetch([
+    { text: "国服样例牌现在什么效果？" },
+  ]);
+  assert.equal(results[0].query.kind, "card");
+  assert.equal(results[0].query.region, "cn");
+  assert.equal(results[0].cards[0].key, "Example");
+  assert.equal(results[0].offline, true);
+  f.clock(2000);
+  const active = await f.lookup.prefetch([
+    { text: "国服样例牌现在什么效果？" },
+  ]);
+  assert.equal(active[0].changes[0].status, "temporary-active");
+  assert.deepEqual(
+    await f.lookup.prefetch([{ text: "国际服样例牌现在什么效果？" }]),
+    []
+  );
 });

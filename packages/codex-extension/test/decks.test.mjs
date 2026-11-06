@@ -10,6 +10,8 @@ import {
   imageDeckRequest,
   issuedDeckCodes,
   validateDeckLookup,
+  textDeckCode,
+  textDeckRequest,
 } from "../src/decks.mjs";
 const ids = Array.from({ length: 12 }, (_, i) => "Card" + i);
 const cards = Array.from({ length: 14 }, (_, i) => ({
@@ -37,6 +39,209 @@ const request = {
   imageIndex: 1,
   cards: ids.map((query) => ({ query, confidence: "clear" })),
 };
+
+test("text lists encode only distinct collectible cards from the supplied region, with ambiguity limited to relevant slots", () => {
+  const q = {
+    kind: "encode_text_deck",
+    region: "cn",
+    cards: cards.slice(0, 12).map((c) => c.name),
+    name: "我的文字卡组",
+  };
+  validateDeckLookup(q);
+  assert.equal(textDeckCode(q, cards, false).status, "denied");
+  const ok = textDeckCode(q, cards, true);
+  assert.deepEqual(decodeDeck(ok.code), { ids, name: q.name, code: ok.code });
+  assert.equal(ok.replyText.split("\n").filter((l) => l === ok.code).length, 1);
+  assert.equal(
+    textDeckCode({ ...q, cards: [...ids.slice(1), ids[1]] }, cards, true)
+      .status,
+    "invalid-composition"
+  );
+  for (const extra of [
+    { key: "ForeignOnly", name: "外服专有", collectible: true },
+    { key: "Token", name: "衍生", collectible: false },
+  ]) {
+    const supplied = extra.key === "Token" ? [...cards, extra] : cards;
+    const bad = textDeckCode(
+      { ...q, cards: [...ids.slice(1), extra.key] },
+      supplied,
+      true
+    );
+    assert.equal(bad.status, "needs-clarification");
+    assert.equal(bad.code, undefined);
+    assert.equal(bad.unresolved[0].slot, 12);
+  }
+  const ambiguous = [
+    ...cards,
+    { key: "AltA", name: "观察者甲", collectible: true },
+    { key: "AltB", name: "观察者乙", collectible: true },
+  ];
+  const bad = textDeckCode(
+    { ...q, cards: [...ids.slice(1), "观察者"] },
+    ambiguous,
+    true
+  );
+  assert.equal(bad.status, "needs-clarification");
+  assert.equal(bad.unresolved[0].candidates.length, 2);
+});
+
+test("editing preserves the base, applies simultaneous changes, and can continue with the newly issued code", () => {
+  const base = encodeDeck(ids, "原卡组"),
+    q = {
+      kind: "edit_deck",
+      region: "cn",
+      code: base,
+      replacements: [{ from: "卡0", to: "Card12" }],
+    };
+  validateDeckLookup(q);
+  const first = textDeckCode(q, cards, true);
+  assert.equal(first.status, "ok");
+  assert.deepEqual(decodeDeck(base).ids, ids);
+  assert.deepEqual(decodeDeck(first.code).ids, ["Card12", ...ids.slice(1)]);
+  assert.equal(decodeDeck(first.code).name, "原卡组");
+  const second = textDeckCode(
+    {
+      ...q,
+      code: first.code,
+      replacements: [{ from: "Card12", to: "卡13" }],
+      name: "新名字",
+    },
+    cards,
+    true
+  );
+  assert.deepEqual(decodeDeck(second.code).ids, ["Card13", ...ids.slice(1)]);
+  assert.equal(decodeDeck(second.code).name, "新名字");
+  const swapped = textDeckCode(
+    {
+      ...q,
+      replacements: [
+        { from: "Card0", to: "Card1" },
+        { from: "Card1", to: "Card0" },
+      ],
+    },
+    cards,
+    true
+  );
+  assert.equal(swapped.status, "ok");
+  assert.deepEqual(swapped.cardIds, ["Card1", "Card0", ...ids.slice(2)]);
+});
+
+test("edits reject conflicts atomically without an output code", () => {
+  const q = {
+    kind: "edit_deck",
+    region: "cn",
+    code: encodeDeck(ids),
+    replacements: [{ from: "Card0", to: "Card12" }],
+  };
+  const cases = [
+    [{ ...q, code: "broken" }, "invalid-code"],
+    [
+      { ...q, code: encodeDeck([...ids.slice(1), "ForeignOnly"]) },
+      "needs-clarification",
+    ],
+    [
+      { ...q, replacements: [{ from: "Card13", to: "Card12" }] },
+      "invalid-replacement",
+    ],
+    [
+      { ...q, replacements: [{ from: "Card0", to: "Card0" }] },
+      "invalid-replacement",
+    ],
+    [
+      { ...q, replacements: [{ from: "Card0", to: "Card1" }] },
+      "invalid-composition",
+    ],
+    [
+      {
+        ...q,
+        replacements: [
+          { from: "Card0", to: "Card12" },
+          { from: "卡0", to: "Card13" },
+        ],
+      },
+      "invalid-replacement",
+    ],
+    [
+      {
+        ...q,
+        replacements: [
+          { from: "Card0", to: "Card12" },
+          { from: "Card1", to: "ForeignOnly" },
+        ],
+      },
+      "needs-clarification",
+    ],
+  ];
+  for (const [bad, status] of cases) {
+    const result = textDeckCode(bad, cards, true);
+    assert.equal(result.status, status);
+    assert.equal(result.code, undefined);
+  }
+});
+
+test("text request routing accepts lists, code edits and follow-ups without claiming unrelated recent images", () => {
+  const list =
+    "把" +
+    cards
+      .slice(0, 12)
+      .map((c) => c.name)
+      .join("、") +
+    "生成卡组码";
+  for (const body of [
+    list,
+    "把上一套的卡0换成卡12，给我新码",
+    "补齐这套卡组并生成码",
+    "给我组一套国服卡组并附码",
+    encodeDeck(ids) + "\n请生成卡组码",
+  ]) {
+    assert.equal(textDeckRequest(body), true, body);
+    assert.equal(imageDeckRequest({ body }, "bot"), false, body);
+  }
+  for (const body of [
+    "转卡组码",
+    "帮我把这张图做成卡组码",
+    "这张截图把卡0换成卡1再给码",
+    "把图里的卡0换成卡1再给码",
+    "不要把卡0换成卡1",
+    "今天换了个手机",
+  ])
+    assert.equal(textDeckRequest(body), false, body);
+  assert.equal(
+    imageDeckRequest(
+      { body: "把卡0换成卡1，给我卡组码", quote: { embeddedImage: true } },
+      "bot"
+    ),
+    true
+  );
+});
+
+test("text and edit schemas reject extra fields and malformed or unbounded inputs", () => {
+  const q = { kind: "encode_text_deck", region: "cn", cards: ids };
+  const e = {
+    kind: "edit_deck",
+    region: "cn",
+    code: encodeDeck(ids),
+    replacements: [{ from: "Card0", to: "Card12" }],
+  };
+  for (const bad of [
+    { ...q, cards: ids.slice(1) },
+    { ...q, cards: [...ids.slice(1), ""] },
+    { ...q, cards: ids.map((query) => ({ query })) },
+    { ...q, imageIndex: 1 },
+    { ...q, name: "a".repeat(81) },
+    { ...q, region: "mixed" },
+    { ...e, replacements: [] },
+    {
+      ...e,
+      replacements: [
+        { from: "Card0", to: "Card12", url: "https://example.test" },
+      ],
+    },
+    { ...e, code: "x".repeat(12001) },
+    { ...e, replacements: Array(13).fill({ from: "Card0", to: "Card12" }) },
+  ])
+    assert.throws(() => validateDeckLookup(bad));
+});
 
 test("official deck codes round-trip UTF-8 names and tolerate official share comments; bad compositions are refused", () => {
   const code = encodeDeck(ids, "国服截图");

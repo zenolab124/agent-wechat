@@ -13,6 +13,7 @@ import {
   validateDeckLookup,
   parseDeckLibrary,
   imageDeckCode,
+  textDeckCode,
   queryDecks,
 } from "./decks.mjs";
 import {
@@ -66,6 +67,14 @@ export function validateLookups(value) {
     throw Error("Invalid SNAP lookup batch");
   if (
     value.filter((item) =>
+      ["encode_image_deck", "encode_text_deck", "edit_deck"].includes(
+        item?.kind
+      )
+    ).length > 1
+  )
+    throw Error("One deck encoding operation per reply");
+  if (
+    value.filter((item) =>
       [
         "engine_prepare",
         "engine_confirm",
@@ -110,7 +119,13 @@ export function validateLookups(value) {
     }
     if (
       item &&
-      ["decks", "decode_deck", "encode_image_deck"].includes(item.kind)
+      [
+        "decks",
+        "decode_deck",
+        "encode_image_deck",
+        "encode_text_deck",
+        "edit_deck",
+      ].includes(item.kind)
     ) {
       validateDeckLookup(item);
       continue;
@@ -531,7 +546,12 @@ export function createSnapLookup({
     },
     async lookup(
       requests,
-      { imageDeckAllowed = false, imageDeckIndex, scope } = {}
+      {
+        imageDeckAllowed = false,
+        imageDeckIndex,
+        textDeckAllowed = false,
+        scope,
+      } = {}
     ) {
       validateLookups(requests);
       return Promise.all(
@@ -583,6 +603,8 @@ export function createSnapLookup({
                 "location_schedule",
                 "encode_image_deck",
                 "decode_deck",
+                "encode_text_deck",
+                "edit_deck",
               ].includes(query.kind)
             )
               return {
@@ -659,6 +681,12 @@ export function createSnapLookup({
                 })),
               };
             }
+            if (["encode_text_deck", "edit_deck"].includes(query.kind))
+              return {
+                query,
+                ...metadata,
+                ...textDeckCode(query, regional, textDeckAllowed),
+              };
             if (query.kind === "encode_image_deck")
               return {
                 query,

@@ -46,6 +46,8 @@ const lookupLabel = (query) => {
     }${query.include?.length ? ` · 包含${query.include.join("、")}` : ""}`;
   if (query?.kind === "decode_deck") return "解析卡组码";
   if (query?.kind === "encode_image_deck") return "截图转卡组码";
+  if (query?.kind === "encode_text_deck") return "文字生成卡组码";
+  if (query?.kind === "edit_deck") return "换卡生成新码";
   return query?.query ?? "最近 OTA";
 };
 function message(parent, role, text, at, sender, quote) {

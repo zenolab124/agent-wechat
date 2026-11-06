@@ -1,4 +1,5 @@
 import { needsPlayerRewrite } from './mechanism-presentation.mjs';
+import { textDeckRequest } from './decks.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -189,18 +190,18 @@ export class CodexClient {
             continue;
           }
           const codes = decision.reply ? issuedDeckCodes(decision.text) : [];
-          if (codes.some(code => !permittedCodes.has(code))) return {reply:true,text:'这次生成的卡组码未通过本地校验。请明确指定本地卡组；若要把图片转成卡组码，请发图或引用原图并说明转换请求。',usage:completeUsage?tokenUsage(combined):null,modelRequests:requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query)};
+          if (codes.some(code => !permittedCodes.has(code))) return {reply:true,text:'这次卡组码未通过本地校验。请提供完整的十二张文字卡名，或指定原卡组码和要替换的卡；图片转码请发图或引用原图并说明转换请求。',usage:completeUsage?tokenUsage(combined):null,modelRequests:requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query)};
           return { ...decision, ...(engineOperations.length?{engineOperations}:{}), ...(codes.length ? {verifiedDeckCode:true} : {}), usage: completeUsage ? tokenUsage(combined) : null, modelRequests: requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query) };
         }
-        const results = await this.snapLookup.lookup(decision.lookup, {imageDeckAllowed:context.deckImageRequest?.authorized===true,imageDeckIndex:context.deckImageRequest?.imageIndex,scope:options.scope});
+        const results = await this.snapLookup.lookup(decision.lookup, {imageDeckAllowed:context.deckImageRequest?.authorized===true,imageDeckIndex:context.deckImageRequest?.imageIndex,textDeckAllowed:(context.messages??[]).some(m=>textDeckRequest(m.text)&&!m.vision&&![3,47].includes(m.quote?.type)),scope:options.scope});
         for(const result of results) if(result.query?.kind?.startsWith('engine_')) {
           engineOperations.push({kind:result.query.kind,status:result.status,id:result.id??null,version:result.version??null,durationMs:result.durationMs??null,reused:result.reused===true,hypothetical:result.hypothetical===true,failureCode:result.failureCode??null,...(result.cases?{caseIds:result.cases.map(c=>({label:c.label,id:c.id??null,status:c.status}))}:{})});
           if(result.status==='awaiting-confirmation'&&typeof result.replyText==='string') enginePreview=result.replyText;
         }
-        const imageDeckResult=results.find(r=>r.query?.kind==='encode_image_deck'&&r.status==='ok'&&r.offline&&typeof r.replyText==='string'&&typeof r.code==='string');
-        if(imageDeckResult) {
-          await this.request('thread/inject_items',{threadId,items:[{type:'message',role:'user',content:[{type:'input_text',text:JSON.stringify({snapLookupResults:results})}]},{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:JSON.stringify({reply:true,text:imageDeckResult.replyText})}]}]});
-          return {reply:true,text:imageDeckResult.replyText,verifiedDeckCode:true,usage:completeUsage?tokenUsage(combined):null,modelRequests:requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query)};
+        const encodedDeck=results.find(r=>['encode_image_deck','encode_text_deck','edit_deck'].includes(r.query?.kind)&&r.status==='ok'&&r.offline&&typeof r.replyText==='string'&&typeof r.code==='string');
+        if(encodedDeck) {
+          await this.request('thread/inject_items',{threadId,items:[{type:'message',role:'user',content:[{type:'input_text',text:JSON.stringify({snapLookupResults:results})}]},{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:JSON.stringify({reply:true,text:encodedDeck.replyText})}]}]});
+          return {reply:true,text:encodedDeck.replyText,verifiedDeckCode:true,usage:completeUsage?tokenUsage(combined):null,modelRequests:requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query)};
         }
         if(enginePreview) {
           // The preview is program output, so send it without paying for a
