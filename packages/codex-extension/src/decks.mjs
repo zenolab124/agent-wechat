@@ -184,7 +184,11 @@ export function imageDeckRequest(message, ownUsername) {
       command
     );
   return (
-    directlyMentioned(message, ownUsername) &&
+    !(
+      message.mentions?.state === "known" &&
+      message.mentions.userIds?.length > 0 &&
+      !message.mentions.userIds.includes(ownUsername)
+    ) &&
     typeof message.body === "string" &&
     !/(?:不要|不用|不必|无需|先不|别).{0,12}(?:转|生成|做|给|卡组码|套牌码)/.test(
       message.body
@@ -271,7 +275,7 @@ export function imageDeckCode(request, cards, allowed) {
   if (!allowed)
     return {
       status: "denied",
-      reason: "截图转码需要当前发言人原生@助手并明确请求，且已绑定本次图片。",
+      reason: "截图转码需要当前发言人明确请求，且已绑定本次图片。",
     };
   const resolved = request.cards.map((slot) =>
     slot.confidence === "clear" ? resolveSearchCard(cards, slot.query) : null
@@ -289,7 +293,7 @@ export function imageDeckCode(request, cards, allowed) {
         missing.length
           ? `第${missing.join("、")}张卡看不清或无法在本服目录中唯一核对`
           : "识别结果有重复卡牌"
-      }。已收到本次@及转码请求，无需重复授权；如果复核后仍不清楚，只需补充这些位置的卡名。`,
+      }。已收到转码请求，无需重复授权；如果复核后仍不清楚，只需补充这些位置的卡名。`,
       uncertainSlots: missing,
       recognition: request.cards.map((slot, index) => ({
         slot: index + 1,

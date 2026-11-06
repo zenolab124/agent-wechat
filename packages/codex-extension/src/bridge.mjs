@@ -7,7 +7,7 @@ import { prepareVisual } from './visuals.mjs';
 import { validateEngineConfig } from './engine.mjs';
 import { validateSnapConfig } from './snap.mjs';
 import { validatePersona } from './persona.mjs';
-import { imageDeckRequest } from './decks.mjs';
+import { imageDeckRequest, directlyMentioned } from './decks.mjs';
 
 export function validateConfig(value, { bootstrap = false } = {}) {
   validatePersona(value.persona);
@@ -72,7 +72,7 @@ export class Bridge {
     const direct = group?.replyToAssistantQuotes === true && quotesAssistant(message, this.config.ownUsername);
     const quote = group?.replyToAssistantQuotes === true && receivedQuote(message);
     const deckRequest = !!group && !!this.config.snap && imageDeckRequest(message, this.config.ownUsername);
-    const senderAllowed = group?.senders.includes(message.senderId) || direct || deckRequest;
+    const senderAllowed = group?.senders.includes(message.senderId) || direct || (deckRequest && directlyMentioned(message, this.config.ownUsername));
     const typeAllowed = message.type === 1 || !!quote || group?.receiveImagesAndStickers === true && isVisualMessage(message);
     if (message.accountId !== this.config.accountId || message.direction !== 'incoming' || message.senderId === this.config.ownUsername
       || typeof message.senderId !== 'string' || !message.senderId
@@ -220,12 +220,19 @@ export class Bridge {
       await this.identity();
       if (!await this.inputs(task)) { this.ignore(task); return; }
       const modelMessages = []; const imagePaths = [];
-      let selectedImage;
+      let selectedImage, ambiguousImage = false;
       if (conversionRequest) {
-        selectedImage = [...messages].reverse().find(message => message.senderId === conversionRequest.senderId && (describeMessage(message)?.kind === 'image' || message === conversionRequest && message.quote?.embeddedImage === true));
-        if (!selectedImage) {
+        // An embedded quote identifies its image explicitly; otherwise bind only
+        // one image from the requester, never guess between several candidates.
+        const batchImages = messages.filter(message => message.senderId === conversionRequest.senderId && describeMessage(message)?.kind === 'image');
+        if (conversionRequest.quote?.embeddedImage === true) selectedImage = conversionRequest;
+        else if (batchImages.length === 1) selectedImage = batchImages[0];
+        else if (batchImages.length > 1) ambiguousImage = true;
+        if (!selectedImage && !ambiguousImage) {
           const recent = await this.client.messages(this.config.accountId, task.threadId, {limit: 40});
-          selectedImage = recent.items.filter(message => message.accountId === this.config.accountId && message.threadId === task.threadId && message.senderId === conversionRequest.senderId && message.direction === 'incoming' && message.type === 3 && !message.recall && Date.parse(message.createdAt) <= Date.parse(conversionRequest.createdAt) && Date.parse(conversionRequest.createdAt)-Date.parse(message.createdAt) <= 300000).sort((a,b) => Date.parse(b.createdAt)-Date.parse(a.createdAt))[0];
+          const candidates = [...new Map(recent.items.filter(message => message.accountId === this.config.accountId && message.threadId === task.threadId && message.senderId === conversionRequest.senderId && message.direction === 'incoming' && message.type === 3 && !message.recall && Date.parse(message.createdAt) <= Date.parse(conversionRequest.createdAt) && Date.parse(conversionRequest.createdAt)-Date.parse(message.createdAt) <= 300000).map(m=>[m.id,m])).values()];
+          if(candidates.length===1)selectedImage=candidates[0];
+          else if(candidates.length>1)ambiguousImage=true;
         }
         if (selectedImage && !messages.some(message => message.id === selectedImage.id)) {
           task.deckImageSource = {messageId:selectedImage.id,senderId:selectedImage.senderId,fingerprint:messageFingerprint(selectedImage)};
@@ -261,7 +268,7 @@ export class Bridge {
       const scope = {accountId:this.config.accountId,groupId:task.threadId,messages:messages.map(message=>({id:message.id,sender:message.senderId,text:message.body??""}))};
       let decision;
       try {
-        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}), ...(conversionRequest ? {deckImageRequest:{authorized:!!deckImageIndex,imageIndex:deckImageIndex??null,sender:conversionRequest.senderId,requestMessageId:conversionRequest.id,sourceMessageId:selectedImage?.id??null}} : {}) }, this.config.persistentConversations ? {
+        decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}), ...(conversionRequest ? {deckImageRequest:{authorized:!!deckImageIndex,sourceStatus:ambiguousImage?'ambiguous':!selectedImage?'missing':!deckImageIndex?'unavailable':'ready',imageIndex:deckImageIndex??null,sender:conversionRequest.senderId,requestMessageId:conversionRequest.id,sourceMessageId:selectedImage?.id??null}} : {}) }, this.config.persistentConversations ? {
           imagePaths, scope,
           persist: true, conversation, title: `微信群助手 · ${task.threadId}`,
           onThread: info => {
@@ -290,7 +297,7 @@ export class Bridge {
         decision = { ...decision, reply: false };
       }
       if (replyRequired && !decision.reply) {
-        decision = { ...decision, reply: true, text: conversionRequest ? '请先发清晰的卡组图片，再原生@我请求转码；也可以引用原图并@我。看不清的卡牌请补充卡名。' : '我看到了你引用的消息。你希望我解释或补充哪一部分？' };
+        decision = { ...decision, reply: true, text: conversionRequest ? (ambiguousImage ? '有几张可能的卡组图片，请引用你要转换的那张图并说“转卡组码”，不需要@。' : '请发卡组图片并说“转卡组码”，或引用要转换的那张图片提出请求；不需要@。看不清的卡牌只需补充对应卡名。') : '我看到了你引用的消息。你希望我解释或补充哪一部分？' };
         task.replyFallback = true;
       }
       if (!decision.reply) { usage.silentCalls++; this.ignore(task); await this.refreshContext(task.threadId); return; }

@@ -297,7 +297,7 @@ function render(data) {
     );
     if (task.sendId) row.append(el("small", `发送 ID：${task.sendId}`));
     if (task.trigger === "image-deck-request")
-      row.append(el("small", "原生@助手并明确请求截图转码 · 同发言人图片绑定"));
+      row.append(el("small", "明确请求截图转码 · @可选 · 目标图片绑定"));
     if (task.verifiedDeckCode)
       row.append(el("small", "回复中的卡组码已通过本地校验"));
     if (task.modelRequests)

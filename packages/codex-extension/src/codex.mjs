@@ -178,7 +178,7 @@ export class CodexClient {
         }
         if (!decision.lookup) {
           const codes = decision.reply ? issuedDeckCodes(decision.text) : [];
-          if (codes.some(code => !permittedCodes.has(code))) return {reply:true,text:'这次生成的卡组码未通过本地校验。请明确指定本地卡组；若要把图片转成卡组码，请原生@我并说明转换请求。',usage:completeUsage?tokenUsage(combined):null,modelRequests:requests};
+          if (codes.some(code => !permittedCodes.has(code))) return {reply:true,text:'这次生成的卡组码未通过本地校验。请明确指定本地卡组；若要把图片转成卡组码，请发图或引用原图并说明转换请求。',usage:completeUsage?tokenUsage(combined):null,modelRequests:requests};
           return { ...decision, ...(engineOperations.length?{engineOperations}:{}), ...(codes.length ? {verifiedDeckCode:true} : {}), usage: completeUsage ? tokenUsage(combined) : null, modelRequests: requests };
         }
         const results = await this.snapLookup.lookup(decision.lookup, {imageDeckAllowed:context.deckImageRequest?.authorized===true,imageDeckIndex:context.deckImageRequest?.imageIndex,scope:options.scope});

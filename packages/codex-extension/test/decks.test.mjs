@@ -174,20 +174,17 @@ test("image conversion requires caller permission and twelve unique, clear, exac
     "needs-confirmation"
   );
 });
-test("only canonical direct self mentions plus an explicit conversion request open the image operation", () => {
+test("explicit conversion requests do not require mentions and ignore requests addressed to someone else", () => {
   const good = {
     body: "@小助手 帮我把这个做成卡组码",
     mentions: { state: "known", userIds: ["bot"], self: true, all: false },
   };
   assert.equal(imageDeckRequest(good, "bot"), true);
   for (const bad of [
-    { ...good, mentions: { state: "unknown", userIds: ["bot"] } },
     { ...good, mentions: { state: "known", userIds: ["other"], self: false } },
-    { ...good, mentions: { state: "known", userIds: [], all: true } },
     { ...good, body: "@小助手 哈哈" },
     { ...good, body: "@小助手 不要帮我把这张图转成卡组码" },
     { ...good, body: "@小助手 这张图转卡组码有什么用" },
-    { body: "@小助手 帮我把这张图转成卡组码" },
   ])
     assert.equal(imageDeckRequest(bad, "bot"), false);
 });
@@ -229,7 +226,7 @@ test("native mention with short conversion commands is accepted without extra po
       { body: "转卡组码", mentions: { state: "known", userIds: [] } },
       "bot"
     ),
-    false
+    true
   );
 });
 

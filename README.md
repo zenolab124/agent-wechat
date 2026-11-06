@@ -469,8 +469,8 @@ This path exposes request snapshots, not per-trigger private counters; it must
 not invent loading/reveal counts. Selected seeds are test conditions, not an
 opponent distribution or win rate. No client comparison host is invoked.
 
-Image conversion accepts short native-mention requests such as `@助手 转卡组码`,
-including a quote of the sender's image. Recognition distinguishes the deck
+Image conversion accepts clear requests such as `转卡组码` from admitted
+senders; a native mention is optional. A quote can identify the target image. Recognition distinguishes the deck
 area from adjacent collection cards and can review uncertain printed names
 against local regional candidates in the same image. Partial unique printed
 names may match, but ambiguous names, uncertain slots and duplicate cards never
@@ -503,23 +503,20 @@ collection, votes and source rank do not establish current deck strength. Model
 answers can use only official-format codes issued by local lookup, not codes
 invented or modified by the model.
 
-For screenshot conversion, send an image and then natively mention the assistant
-with an explicit request, or quote that image and mention the assistant. A direct
-self-mention plus the request admits this operation from a member of an already
-configured group; normal unmentioned messages keep the existing sender policy.
-Literal `@name`, `@all` and unknown mention metadata do not qualify. The worker
-uses an image in the same sender's batch, an image embedded in the request's quote,
-or that sender's latest preceding image among 40 recent messages within five
-minutes. It checks account/chat/sender and recall/content again before sending;
-it does not pick another member's unquoted image. A missing image asks for one.
-This adds only operational source references to the journal, without another
-chat archive.
+For screenshot conversion, send an image and say `转卡组码`, or quote the image
+with that request. A native mention is optional for admitted senders. A request
+can use its sole same-sender image in the batch, or a single verified recent
+image from that sender in the same group (up to five minutes). Multiple possible
+images prompt a request to quote the intended image. Images alone never enable
+conversion. Existing group and sender admission policies still apply; native
+self mentions retain their existing explicit-request admission behavior.
 
-The model marks each visible slot clear or uncertain. Twelve distinct collectible
-cards must match exact IDs or unambiguous names in the selected region's local
-catalog before the program encodes official UTF-8 JSON Base64. Uncertain, repeated,
-missing or foreign-region cards get a clarification without a code. Pictures and
-stickers without a requested native mention do not enable image conversion.
+The model reads the selected image and submits twelve recognized card slots to
+local validation. Clear unique regional collectible cards produce an official
+JSON Base64 code; uncertain, duplicate or unmatched cards produce a specific
+clarification without a code. Recognition never fills from another region or
+from a common deck list. Images and stickers without an explicit conversion
+request do not enable image conversion.
 Codes describe composition, not historic card effects; real screenshot recognition
 and game import need recipient acceptance. The debug page shows the trigger,
 source image, lookup stages and local code validation.

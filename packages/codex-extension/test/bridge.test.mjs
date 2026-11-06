@@ -403,3 +403,20 @@ test('read recovery does not duplicate an uncertain text send or restart generat
  await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(Object.values(f.store.data.tasks)[0].state,'unknown');
  await f.bridge.drain();assert.equal(Object.values(f.store.data.tasks)[0].state,'done');assert.equal(posts,1);assert.equal(receipts,2);assert.equal(f.generations.length,1);
 });
+
+test('allowed members convert without @, bind a single own image, and do not broaden group or sender access',async t=>{
+ const f=fixture(t,{callIntervalMs:0,cooldownMs:0,snap:{defaultRegion:'cn',dataDir:'/private/synthetic-snap'},groups:[{id:'test@chatroom',senders:['human'],mode:'selective',receiveImagesAndStickers:true}]});f.bridge.config.stateDir=f.directory;f.message.body='转卡组码';
+ const image={...f.message,id:'own-image',type:3,body:null,createdAt:new Date(Date.parse(f.message.createdAt)-1000).toISOString()};const foreign={...image,id:'other-image',senderId:'other'};
+ f.client.message=async(_account,id)=>id===image.id?image:f.message;f.client.messages=async()=>({items:[foreign,image]});const bytes=readFileSync(new URL('../../openclaw-extension/test/fixtures/native-model.png',import.meta.url));f.client.mediaAssets=async(_account,id)=>({items:[{id:'asset',accountId:f.config.accountId,messageId:id,kind:'image',state:'available',sha256:createHash('sha256').update(bytes).digest('hex'),byteLength:bytes.length}]});f.client.mediaContent=async()=>({bytes});
+ f.codex.answer=async(context,options)=>{f.generations.push(context);assert.equal(options.imagePaths.length,1);return{reply:true,text:'完整校验码'}};
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.calls.length,1);assert.equal(f.generations[0].deckImageRequest.authorized,true);assert.equal(f.generations[0].deckImageRequest.sourceMessageId,image.id);
+ for(const mutation of [{senderId:'outsider'},{threadId:'other@chatroom'}])assert.equal(f.bridge.policy({...f.message,...mutation}),null);
+ assert.equal(f.bridge.policy({...f.message,type:3,body:null})?.id,'test@chatroom');
+});
+
+test('multiple own image candidates ask for a specific source and never enable conversion without a bound image',async t=>{
+ const f=fixture(t,{snap:{defaultRegion:'cn',dataDir:'/private/synthetic-snap'},groups:[{id:'test@chatroom',senders:['human'],mode:'selective',receiveImagesAndStickers:true}]});f.message.body='转卡组码';
+ const image={...f.message,id:'one',type:3,body:null,createdAt:new Date(Date.parse(f.message.createdAt)-1000).toISOString()};f.client.messages=async()=>({items:[image,{...image,id:'two'}]});f.client.mediaAssets=()=>assert.fail('must select source first');
+ f.codex.answer=async(context)=>{f.generations.push(context);return{reply:true,text:'请引用你要转换的那张图片'}};
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.generations[0].deckImageRequest.authorized,false);assert.equal(f.generations[0].deckImageRequest.sourceStatus,'ambiguous');assert.equal(f.generations[0].deckImageRequest.sourceMessageId,null);assert.equal(f.calls.length,1);
+});
