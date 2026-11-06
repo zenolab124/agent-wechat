@@ -9,13 +9,14 @@ import { StateStore } from './state.mjs';
 import { usageSnapshot } from './usage.mjs';
 import { writeContextView } from './context-view.mjs';
 import { startDebugServer } from './debug-server.mjs';
+import { createWorkerHealth, reconnectingReads } from './runtime.mjs';
 import { createLocalDataRouter, installLocalData } from './local-data.mjs';
 
 const [command, configPath, requestedGroup] = process.argv.slice(2);
 if (!['doctor', 'run', 'codex-test', 'usage', 'context', 'debug', 'data-status', 'install-data'].includes(command) || !configPath) {
   console.error('Usage: wx-codex doctor|run|codex-test|usage|context|debug|data-status|install-data /absolute/private/config.json [groupId|debugPort]'); process.exit(2);
 }
-let store; let codex; let debugServer;
+let store; let codex; let debugServer; let health;
 const controller = new AbortController();
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { controller.abort(); codex?.close(); });
 try {
@@ -57,7 +58,14 @@ try {
     const token = process.env.AGENT_WECHAT_TOKEN;
     if (!token) throw Error('Provide the daemon token privately through AGENT_WECHAT_TOKEN');
     delete process.env.AGENT_WECHAT_TOKEN;
-    const client = new NativeWeChatClient({ baseUrl: config.baseUrl, token });
+    const rawClient = new NativeWeChatClient({ baseUrl: config.baseUrl, token,
+      fetch: (url, init) => fetch(url, {...init, signal: init.signal ? AbortSignal.any([init.signal,controller.signal]) : controller.signal}) });
+    if(command==='run') {
+      if(!config.stateDir?.startsWith('/'))throw Error('An absolute private stateDir is required');
+      store = new StateStore(config.stateDir, { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername });
+      health = createWorkerHealth(config.stateDir);
+    }
+    const client = command==='run' ? reconnectingReads(rawClient,{signal:controller.signal,health,report:value=>console.log(JSON.stringify(value))}) : rawClient;
     const account = await client.account(config.accountId);
     if (command === 'doctor') {
       const status = await client.status();
@@ -71,10 +79,10 @@ try {
         const answer = await codex.answer({ history: [], message: { sender: 'local-test', text: '请回复：Codex 扩展连接成功。' }, mode: 'prefix' });
         console.log(JSON.stringify({ event: 'codex.test', answer }));
       } else {
-        store = new StateStore(config.stateDir, { baseUrl: config.baseUrl, accountId: config.accountId, ownUsername: config.ownUsername });
         const bridge = new Bridge({ client, codex, store, config, signal: controller.signal, report: value => console.log(JSON.stringify(value)),
           afterAnswer: config.persistentConversations ? group => writeContextView(codex, config.stateDir, group, store.data.conversations[group]) : undefined });
         await bridge.identity();
+        health.ready();
         console.log(JSON.stringify({ event: 'worker.ready', sendEnabled: config.sendEnabled === true }));
         while (!controller.signal.aborted) {
           await bridge.identity();
@@ -90,4 +98,4 @@ try {
 } catch (error) {
   // Do not mirror upstream error bodies, messages or credentials into service logs.
   console.error(JSON.stringify({ event: 'worker.stopped', error: error.name, code: error.code ?? null })); process.exitCode = controller.signal.aborted ? 0 : 1;
-} finally { debugServer?.closeAllConnections(); debugServer?.close(); codex?.close(); store?.close(); }
+} finally { health?.close(); debugServer?.closeAllConnections(); debugServer?.close(); codex?.close(); store?.close(); }

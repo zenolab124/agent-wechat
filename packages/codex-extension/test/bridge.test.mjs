@@ -394,3 +394,12 @@ test('transport simulation scope includes only current raw messages, never embed
  f.codex.answer=async(_context,options)=>{scope=options.scope;return{reply:true,text:'核对完成',engineOperations:[{kind:'engine_confirm',status:'denied'}]}};
  await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(scope.messages[0].text,'哈哈');assert.equal(scope.accountId,f.config.accountId);assert.equal(scope.groupId,f.message.threadId);assert.equal(scope.messages[0].sender,f.message.senderId);assert.equal(JSON.stringify(scope).includes('确认推演'),false);assert.equal(Object.values(f.store.data.tasks)[0].engineOperations[0].status,'denied');
 });
+
+test('read recovery does not duplicate an uncertain text send or restart generation', async t=>{
+ const {reconnectingReads}=await import('../src/runtime.mjs');const f=fixture(t);let posts=0,receipts=0;
+ f.client.sendText=async()=>{posts++;throw new DOMException('timeout','TimeoutError');};
+ f.client.sendByKey=async()=>{if(receipts++===0)throw new DOMException('timeout','TimeoutError');return f.receipt;};
+ f.bridge.client=reconnectingReads(f.client,{sleep:async()=>{}});
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(Object.values(f.store.data.tasks)[0].state,'unknown');
+ await f.bridge.drain();assert.equal(Object.values(f.store.data.tasks)[0].state,'done');assert.equal(posts,1);assert.equal(receipts,2);assert.equal(f.generations.length,1);
+});

@@ -333,6 +333,14 @@ to IPv4 loopback, rejects cross-origin access and provides no send/edit controls
 It does not expose hidden reasoning or platform instructions. Stop with Ctrl-C;
 the chat worker and WeChat connection remain independent.
 
+The run worker reconnects read-only daemon requests after timeouts, temporary
+socket failures and retryable HTTP errors. It retains the same event cursor and
+task journal. A text-send timeout still enters receipt recovery and is never a
+reason to repeat the POST. Authentication, identity and invalid-response errors
+remain fatal. The debug page reports worker liveness separately from page
+availability, using the existing worker lock and a private operational heartbeat;
+a stopped worker is not shown as running just because the page can open.
+
 Optional `snap: { "defaultRegion": "cn", "dataDir": "/absolute/private/snap-data" }`
 adds local card and OTA lookups without replacing existing group threads. The
 query process has no database SDK, connection configuration or data-download

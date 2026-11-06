@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { readWorkerHealth } from "./runtime.mjs";
 import { usageSnapshot } from "./usage.mjs";
 import { groupInstructions, outputInstructions } from "./instructions.mjs";
 import { imageDirectory, ownedImageId } from "./visuals.mjs";
@@ -175,6 +176,7 @@ export async function startDebugServer({ config, codex, localDataStatus, port = 
       return send(200, {
         group,
         localData:localDataStatus?.()??null,
+        worker:readWorkerHealth(config.stateDir),
         persona:config.persona??null,
         threadId: conversation?.threadId ?? null,
         model: config.model ?? history?.thread.model ?? null,

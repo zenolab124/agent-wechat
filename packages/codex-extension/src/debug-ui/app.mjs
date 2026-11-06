@@ -231,6 +231,8 @@ function render(data) {
   current = data;
   $("title").textContent = `${data.group.title} · 会话记录`;
   $("subtitle").textContent = `${data.group.id} · 长期会话 · 只读查看`;
+  const workerState={running:'自动回复运行中',starting:'自动回复启动中',reconnecting:'自动回复连接恢复中',stopped:'自动回复已停止',stalled:'自动回复心跳超时',unknown:'自动回复状态待核对'}[data.worker?.state]??'自动回复状态待核对';
+  $("subtitle").textContent += ' · '+workerState;
   const usage = data.usage,
     tokens = usage?.reportedTokens;
   $("total").textContent = format(tokens?.totalTokens);
