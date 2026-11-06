@@ -236,3 +236,12 @@ test("transfer readiness is observed without a second POST, and cancellation esc
     { name: "AbortError" }
   );
 });
+
+test('verified prepared images reuse checked JPEG bytes but still check current ownership and source; tampering fails closed',async t=>{
+ const f=fixture(t),cache=new Map(),timings=[];let reads=0,guards=0;f.client.mediaContent=async()=>{reads++;return{bytes:png}};
+ const args={...f.args,cache,onTiming:t=>timings.push(t),assertCurrent:async()=>guards++};const first=await prepareVisual(args),before=guards,second=await prepareVisual(args);assert.equal(second.status,'ready');assert.equal(first.path,second.path);assert.equal(reads,1);assert.ok(guards>before);assert.equal(timings[1].cacheHit,true);assert.equal(timings[1].contentMs,0);
+ const fs=await import('node:fs');fs.writeFileSync(second.path,'tampered');await assert.rejects(prepareVisual(args),{code:'VISUAL_INTEGRITY'});assert.equal(reads,1);
+});
+test('a changed asset source or a missing derived preview cannot be satisfied from the prepared-image cache',async t=>{
+ const f=fixture(t),cache=new Map();const first=await prepareVisual({...f.args,cache});const fs=await import('node:fs');fs.rmSync(first.path);let reads=0;f.client.mediaContent=async()=>{reads++;return{bytes:png}};assert.equal((await prepareVisual({...f.args,cache})).status,'ready');assert.equal(reads,1);f.asset.sha256='a'.repeat(64);await assert.rejects(prepareVisual({...f.args,cache}),{code:'VISUAL_INTEGRITY'});assert.equal(reads,2);
+});

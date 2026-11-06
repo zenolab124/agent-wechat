@@ -150,6 +150,7 @@ export function createLocalDataRouter(options) {
       return current.engineEnabled;
     },
     lookup: (...args) => current.lookup(...args),
+    prefetch: (...args) => current.prefetch(...args),
     inspect: (...args) => current.inspect(...args),
     reload(snap) {
       const next = JSON.stringify(snap);

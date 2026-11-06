@@ -933,6 +933,24 @@ export function createEngineService({
               enabled: config.autoMechanismTests === true,
               kind: "engine_test",
               required: ["position", "question", "assumptions", "focus"],
+              ...(["Ironheart", "MistyKnight", "Cyclops"].every((id) =>
+                content.cards.some((c) => c.id === id)
+              ) && content.locations.some((l) => l.id === "Ruins")
+                ? {
+                    syntheticExample: {
+                      kind: "engine_test",
+                      region: "cn",
+                      question: "铁心是否仅给己方已揭示卡加战力",
+                      assumptions: [
+                        "这是助手构造的第三回合假设：废墟，己方迷雾骑士、对方独眼镭射已揭示；所有牌为生成牌，无其他历史；双方未列动作空过",
+                      ],
+                      focus: [100],
+                      position: ironheartExample(content),
+                      seeds: 1,
+                      until: "turn",
+                    },
+                  }
+                : {}),
               note: "机制问题允许自拟最小场景并直接运行；不能把假设当实战，不能跳过真实对局确认。焦点focus为待观察触发来源的实体ID；目标触发未出现时不能推断它不能触发。",
             },
             openingTests: {

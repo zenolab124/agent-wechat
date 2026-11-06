@@ -385,3 +385,7 @@ test("optional knowledge integrity failure cannot borrow another region or break
   assert.equal(globalRules.status, "unsupported");
   assert.equal(f.reads.length, before);
 });
+
+test('prefetch returns current verified regional card facts and refreshes time-dependent OTA status without external access',async()=>{
+ const f=fixture();const results=await f.lookup.prefetch([{text:'国服样例牌现在什么效果？'}]);assert.equal(results[0].query.kind,'card');assert.equal(results[0].query.region,'cn');assert.equal(results[0].cards[0].key,'Example');assert.equal(results[0].offline,true);f.clock(2000);const active=await f.lookup.prefetch([{text:'国服样例牌现在什么效果？'}]);assert.equal(active[0].changes[0].status,'temporary-active');assert.deepEqual(await f.lookup.prefetch([{text:'国际服样例牌现在什么效果？'}]),[]);
+});

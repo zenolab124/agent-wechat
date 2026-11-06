@@ -223,6 +223,10 @@ export async function startDebugServer({ config, codex, localDataStatus, port = 
             modelRequests: task.modelRequests ?? null,
             verifiedDeckCode: task.verifiedDeckCode === true,
             engineOperations: task.engineOperations ?? [],
+            replyStyle:task.replyStyle??null,
+            visualTimings:task.visualTimings??[],
+            preloadMs:task.preloadMs??null,
+            preloadedQueries:task.preloadedQueries??[],
             ...(task.engineOperations?.length ? {deliveryText:task.reply??null} : {}),
           })),
       });

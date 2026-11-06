@@ -436,3 +436,8 @@ test('a quoted send with an uncertain POST response is reconciled by the origina
  await f.bridge.accept(f.event());await f.bridge.drain();const task=Object.values(f.store.data.tasks)[0];assert.equal(task.state,'unknown');assert.equal(task.replyStyle.mode,'quote');assert.equal(posts,1);
  f.client.sendByKey=async(_a,key)=>{assert.equal(key,task.key);return f.receipt};await f.bridge.drain();assert.equal(task.state,'done');assert.equal(posts,1);
 });
+
+test('a slow derived view cannot delay the next accepted batch, and a failed refresh leaves delivery intact',async t=>{
+ const f=fixture(t,{callIntervalMs:0,cooldownMs:0});let release;const hold=new Promise(r=>release=r);let refreshes=0;f.bridge.afterAnswer=async()=>hold;f.bridge.viewRefresh.refresh=async()=>{refreshes++;await hold};
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.calls.length,1);const flushing=f.bridge.viewRefresh.flush();f.client.message=async()=>({...f.message,id:'second',body:'/助手 第二个问题'});await f.bridge.accept({cursor:'2',kind:'message.committed',data:{messageId:'second',threadId:f.message.threadId,origin:'live'}});await f.bridge.drain();assert.equal(f.calls.length,2);assert.equal(refreshes,1);release();await flushing;
+});

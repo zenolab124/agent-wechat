@@ -1,3 +1,4 @@
+import { ViewRefreshQueue } from './view-refresh.mjs';
 import { selectReplyTarget, chooseReplyStyle } from './reply-style.mjs';
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
@@ -59,6 +60,8 @@ const terminal = new Set(['done', 'ignored', 'dry-run', 'rate-limited', 'generat
 export class Bridge {
   constructor({ client, codex, store, config, report = () => {}, afterAnswer, signal, now = Date.now }) {
     Object.assign(this, { client, codex, store, config: validateConfig(config), report, afterAnswer, signal, now });
+    this.viewRefresh = new ViewRefreshQueue({refresh:afterAnswer,report,signal});
+    this.visualCache = new Map();
   }
   async identity() {
     this.signal?.throwIfAborted();
@@ -174,8 +177,7 @@ export class Bridge {
   }
   ignore(task) { task.state = 'ignored'; delete task.reply; this.store.save(); }
   async refreshContext(threadId) {
-    try { await this.afterAnswer?.(threadId); }
-    catch { this.report({ event: 'context.view-unavailable' }); }
+    this.viewRefresh.schedule(threadId);
   }
   async process(task) {
     await this.identity();
@@ -220,7 +222,7 @@ export class Bridge {
         .map(item => ({ sender: item.senderId, text: item.body?.slice(0, 2000), at: item.createdAt })).reverse();
       await this.identity();
       if (!await this.inputs(task)) { this.ignore(task); return; }
-      const modelMessages = []; const imagePaths = [];
+      const modelMessages = []; const imagePaths = []; task.visualTimings = [];
       let selectedImage, ambiguousImage = false;
       if (conversionRequest) {
         // An embedded quote identifies its image explicitly; otherwise bind only
@@ -247,8 +249,8 @@ export class Bridge {
         const input = { messageIndex: modelMessages.length + 1, sender: message.senderId, text: content.text, at: message.createdAt,
           ...(content.kind !== 'text' ? { kind: content.kind } : {}), ...(quotedInput(message) ? { quote: quotedInput(message) } : {}) };
         if (isVisualMessage(message) && group.receiveImagesAndStickers === true) {
-          const visual = await prepareVisual({ client: this.client, config: this.config, message, signal: this.signal,
-            assertCurrent: async () => { await this.identity(); if (!await this.inputs(task)) throw Object.assign(Error('Visual source changed'), { code: 'VISUAL_INTEGRITY' }); } });
+          const visual = await prepareVisual({ client: this.client, config: this.config, message, signal: this.signal, cache:this.visualCache, onTiming:timing=>task.visualTimings.push({messageIndex:input.messageIndex,...timing}),
+            assertCurrent: async () => { const [,current] = await Promise.all([this.identity(),this.inputs(task)]); if (!current) throw Object.assign(Error('Visual source changed'), { code: 'VISUAL_INTEGRITY' }); } });
           input.vision = { status: visual.status, ...(visual.status === 'ready' ? {
             imageIndex: imagePaths.length + 1, width: visual.width, height: visual.height, representation: visual.representation,
           } : {}) };
@@ -289,6 +291,8 @@ export class Bridge {
       }
       recordResult(this.store.data, task, decision.usage, 'completed');
       task.modelRequests = decision.modelRequests ?? 1;
+      task.preloadMs = decision.preloadMs ?? null;
+      task.preloadedQueries = decision.preloadedQueries ?? [];
       if (decision.engineOperations?.length) task.engineOperations = decision.engineOperations;
       if (decision.verifiedDeckCode) task.verifiedDeckCode = true;
       generated = true;

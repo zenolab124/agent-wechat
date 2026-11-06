@@ -1,3 +1,4 @@
+import { prefetchPlan, compactPrefetch } from "./prefetch.mjs";
 import { createEngineService, validateEngineLookup } from "./engine.mjs";
 import { createHash } from "node:crypto";
 import {
@@ -65,7 +66,12 @@ export function validateLookups(value) {
     throw Error("Invalid SNAP lookup batch");
   if (
     value.filter((item) =>
-      ["engine_prepare", "engine_confirm", "engine_test", "engine_opening_test"].includes(item?.kind)
+      [
+        "engine_prepare",
+        "engine_confirm",
+        "engine_test",
+        "engine_opening_test",
+      ].includes(item?.kind)
     ).length > 1
   )
     throw Error("One simulation operation per reply");
@@ -493,11 +499,34 @@ export function createSnapLookup({
       },
     };
   }
-  return {
+  const api = {
     inspect,
     defaultRegion: snap.defaultRegion,
     engineEnabled: !!engine,
-    engineAutoTests:engine?.autoMechanismTests===true,
+    engineAutoTests: engine?.autoMechanismTests === true,
+    async prefetch(messages) {
+      try {
+        const source = load();
+        const region = /国际服|全球服|global/i.test(
+          messages.map((m) => m.text ?? "").join(" ")
+        )
+          ? "global"
+          : snap.defaultRegion;
+        const plan = prefetchPlan({
+          messages,
+          cards: source.cards,
+          locations: knowledge.locations[region]?.data ?? [],
+          defaultRegion: snap.defaultRegion,
+          engineEnabled: !!engine,
+          engineAutoTests: engine?.autoMechanismTests === true,
+        });
+        return plan.length
+          ? compactPrefetch(await api.lookup(plan), messages)
+          : [];
+      } catch {
+        return [];
+      }
+    },
     async lookup(
       requests,
       { imageDeckAllowed = false, imageDeckIndex, scope } = {}
@@ -739,4 +768,5 @@ export function createSnapLookup({
       );
     },
   };
+  return api;
 }

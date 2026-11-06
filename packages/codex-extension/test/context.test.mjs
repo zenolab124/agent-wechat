@@ -173,3 +173,15 @@ test('reply routing metadata survives model parsing without permitting arbitrary
  const c=new CodexClient({timeoutMs:1000});c.request=async(method)=>{if(method==='thread/start')return{thread:{id:'route'}};if(method==='turn/start'){c.onMessage({method:'item/completed',params:{threadId:'route',turnId:'one',item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify({reply:true,text:'答复第一人',replyTo:1,quoteReply:true,messageId:'forged'})}}});c.onMessage({method:'turn/completed',params:{threadId:'route',turn:{id:'one',status:'completed'}}});return{turn:{id:'one'}}}return{}};
  const r=await c.answer({messages:[{messageIndex:1,text:'question'}]});assert.equal(r.replyTo,1);assert.equal(r.quoteReply,true);assert.equal(r.messageId,undefined);
 });
+
+test('preloaded facts enable a one-turn answer and locally issued deck codes without repeated lookup; observation-only batches never preload',async()=>{
+ const ids=Array.from({length:12},(_,i)=>'Card'+i),code=Buffer.from(JSON.stringify({Cards:ids.map(CardDefId=>({CardDefId})),Name:''})).toString('base64');let preloads=0;
+ const c=new CodexClient({timeoutMs:1000,snapLookup:{defaultRegion:'cn',prefetch:async()=>{preloads++;return[{query:{kind:'decks',region:'cn'},status:'ok',offline:true,decks:[{code}]}]},lookup:()=>assert.fail('already available')}});
+ c.request=async(method,p)=>{if(method==='thread/start')return{thread:{id:'prefetch'}};if(method==='turn/start'){const ctx=JSON.parse(p.input[0].text);const observe=ctx.observeOnly===true;if(!observe){assert.equal(ctx.preloaded,true);assert.equal(ctx.snapLookupResults[0].decks[0].code,code)}c.onMessage({method:'item/completed',params:{threadId:'prefetch',turnId:'one',item:{type:'agentMessage',phase:'final_answer',text:JSON.stringify(observe?{reply:false}:{reply:true,text:code})}}});c.onMessage({method:'turn/completed',params:{threadId:'prefetch',turn:{id:'one',status:'completed'}}});return{turn:{id:'one'}}}return{}};
+ const r=await c.answer({messages:[{text:'卡组'}]});assert.equal(r.modelRequests,1);assert.equal(r.verifiedDeckCode,true);assert.equal(r.preloadedQueries[0].kind,'decks');await c.answer({observeOnly:true,messages:[{text:'表情'}]});assert.equal(preloads,1);
+});
+
+test('dataset metadata containing a deck-count object is never interpreted as a list of issued deck codes',async()=>{
+ const c=new CodexClient({timeoutMs:1000,snapLookup:{defaultRegion:'cn',prefetch:async()=>[{query:{kind:'data_status',region:'cn'},status:'ok',offline:true,decks:{count:123}}]}});
+ c.request=async(method)=>{if(method==='thread/start')return{thread:{id:'status'}};if(method==='turn/start'){c.onMessage({method:'item/completed',params:{threadId:'status',turnId:'one',item:{type:'agentMessage',phase:'final_answer',text:'{"reply":true,"text":"本地收录123套"}'}}});c.onMessage({method:'turn/completed',params:{threadId:'status',turn:{id:'one',status:'completed'}}});return{turn:{id:'one'}}}return{}};assert.equal((await c.answer({messages:[{text:'本地资料版本'}]})).text,'本地收录123套');
+});

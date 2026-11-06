@@ -320,7 +320,8 @@ group-to-thread/profile bindings and message reference metadata. Canonical chat
 history stays in Codex. `context` reads its paginated history without a model turn,
 daemon token or worker lock, and writes a private Markdown viewing file. Omit the
 group ID only when exactly one group is configured. The worker refreshes this same
-view after each completed generation. It contains supplied chat instructions, user
+view in a coalesced background queue after completed generations; a slow or failed
+view refresh does not gate the next incoming message. It contains supplied chat instructions, user
 inputs and final decisions, excluding hidden reasoning and server instructions;
 send acceptance remains a separate receipt. Editing the view does not change model
 memory. Open the returned file in the desktop app's right panel. Isolated-profile
@@ -333,7 +334,18 @@ and final output, configured prompts, cumulative group usage, limits and recent
 send receipts. It refreshes every five seconds while the page is visible. Usage
 and old task receipts can predate the current thread. New tasks separately record
 time waiting before the model, the model call, and local observation of an accepted
-send. Total latency starts at local message observation, not the phone's send time;
+send. Image preparation additionally reports ownership checks, asset lookup,
+source reads, conversion and verified-preview reuse. Selected local card facts,
+locations and mechanism input formats can be prefetched into the initial model
+turn; covered queries need no separate model round. Prefetch is read-only, stays
+within the selected regional snapshot, preserves missing/ambiguous information,
+and cannot run simulations or grant conversion permissions. Its results carry
+the original offline/version metadata and the debug page lists loaded queries.
+Verified model-image previews may be reused in memory after a fresh scoped asset
+lookup, current-source checks and a hash/size check of the private derived JPEG.
+A missing preview is regenerated; changed bytes or foreign sources fail checks.
+No additional settled-message store is created, and sender/recall/send guards
+remain active. Total latency starts at local message observation, not the phone's send time;
 old tasks without these measurements show unknown. Shorter batch/poll windows can
 reduce local waiting; model processing and network time remain variable. Set both
 `callIntervalMs`, `cooldownMs` and `maxCallsPerHour` to 0 to disable those optional

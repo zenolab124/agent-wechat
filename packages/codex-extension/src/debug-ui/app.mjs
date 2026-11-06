@@ -301,6 +301,8 @@ function render(data) {
       row.append(el("small", "明确请求截图转码 · @可选 · 目标图片绑定"));
     if (task.verifiedDeckCode)
       row.append(el("small", "回复中的卡组码已通过本地校验"));
+    for(const timing of task.visualTimings??[])row.append(el("small",`图片${timing.messageIndex}准备 ${(timing.totalMs/1000).toFixed(2)} 秒 · 校验${timing.checksMs}ms / 媒体状态${timing.assetsMs}ms / 读取${timing.contentMs}ms / 转图${timing.normalizeMs}ms${timing.cacheHit?" · 已复用预览":""}`));
+    if(task.preloadedQueries?.length)row.append(el("small",`本地预载 ${task.preloadedQueries.length} 项 · ${task.preloadMs??"?"}ms`));
     if (task.modelRequests)
       row.append(
         el("small", `实际模型请求：${task.modelRequests} 次（含资料查询阶段）`)
