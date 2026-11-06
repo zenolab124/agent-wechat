@@ -258,7 +258,7 @@ export class Bridge {
       task.state = 'generating'; usage.callsStarted++; usage.lastCallAt = this.now(); usage.callTimes.push(usage.lastCallAt);
       task.modelStartedAt = usage.lastCallAt;
       this.store.save();
-      const scope = {accountId:this.config.accountId,groupId:task.threadId,messages:messages.map(message=>({sender:message.senderId,text:message.body??""}))};
+      const scope = {accountId:this.config.accountId,groupId:task.threadId,messages:messages.map(message=>({id:message.id,sender:message.senderId,text:message.body??""}))};
       let decision;
       try {
         decision = await this.codex.answer({ history, messages: modelMessages, mode: group.mode, ...(replyRequired ? { replyRequired: true } : {}), ...(observeOnly ? { observeOnly: true } : {}), ...(conversionRequest ? {deckImageRequest:{authorized:!!deckImageIndex,imageIndex:deckImageIndex??null,sender:conversionRequest.senderId,requestMessageId:conversionRequest.id,sourceMessageId:selectedImage?.id??null}} : {}) }, this.config.persistentConversations ? {

@@ -185,7 +185,7 @@ export async function startDebugServer({ config, codex, localDataStatus, port = 
         turns,
         instructions: [
           groupInstructions(!!config.snap,config.persona),
-          outputInstructions(config.model, config.snap?.defaultRegion,!!config.engine),
+          outputInstructions(config.model, config.snap?.defaultRegion,!!config.engine,config.engine?.autoMechanismTests===true),
         ],
         usage:
           usageSnapshot(state).groups.find(

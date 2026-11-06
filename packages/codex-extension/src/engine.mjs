@@ -48,14 +48,23 @@ function bytes(path, max = 32 * 1024 * 1024) {
 }
 export function validateEngineConfig(config) {
   if (config === undefined) return;
-  keys(config, ["binary", "content", "verification", "timeoutMs", "maxSeeds"]);
+  keys(config, [
+    "binary",
+    "content",
+    "verification",
+    "timeoutMs",
+    "maxSeeds",
+    "autoMechanismTests",
+  ]);
   if (
     ["binary", "content", "verification"].some(
       (k) => typeof config[k] !== "string" || !isAbsolute(config[k])
     ) ||
     (config.timeoutMs !== undefined &&
       !integer(config.timeoutMs, 100, 120000)) ||
-    (config.maxSeeds !== undefined && !integer(config.maxSeeds, 1, 10000))
+    (config.maxSeeds !== undefined && !integer(config.maxSeeds, 1, 10000)) ||
+    (config.autoMechanismTests !== undefined &&
+      typeof config.autoMechanismTests !== "boolean")
   )
     throw Error("Invalid local engine configuration");
 }
@@ -74,6 +83,17 @@ export function validateEngineLookup(query) {
       "until",
       "sender",
     ],
+    engine_test: [
+      "kind",
+      "region",
+      "position",
+      "question",
+      "assumptions",
+      "focus",
+      "seeds",
+      "until",
+      "sender",
+    ],
     engine_read: ["kind", "region", "id", "sender"],
     engine_confirm: ["kind", "region", "id", "sender"],
   }[query.kind];
@@ -88,6 +108,33 @@ export function validateEngineLookup(query) {
       query.query.length > 100)
   )
     throw Error("Invalid engine catalog query");
+  if (query.kind === "engine_test") {
+    if (
+      !plain(query.position) ||
+      Buffer.byteLength(JSON.stringify(query.position)) > 32768 ||
+      typeof query.question !== "string" ||
+      !query.question.trim() ||
+      query.question.length > 400 ||
+      !Array.isArray(query.assumptions) ||
+      !query.assumptions.length ||
+      query.assumptions.length > 16 ||
+      query.assumptions.some(
+        (t) => typeof t !== "string" || !t.trim() || t.length > 240
+      ) ||
+      !Array.isArray(query.focus) ||
+      !query.focus.length ||
+      query.focus.length > 8 ||
+      new Set(query.focus).size !== query.focus.length ||
+      query.focus.some((n) => !integer(n, 100, 9999)) ||
+      (query.seeds !== undefined && !integer(query.seeds, 1, 10000)) ||
+      (query.until !== undefined && !["turn", "game"].includes(query.until)) ||
+      (query.sender !== undefined &&
+        (typeof query.sender !== "string" ||
+          !query.sender ||
+          query.sender.length > 256))
+    )
+      throw Error("Invalid mechanism test");
+  }
   if (query.kind === "engine_prepare") {
     if (
       [query.position, query.example, query.baseId].filter(
@@ -180,6 +227,12 @@ export function validatePosition(position, content) {
       "origin",
     ]);
     if (
+      typeof c.definition === "string" &&
+      ID.test(c.definition) &&
+      !cardIds.has(c.definition)
+    )
+      throw Error("engine-missing-card: " + c.definition);
+    if (
       !integer(c.entity, 100, 9999) ||
       entities.has(c.entity) ||
       (c.definition !== null &&
@@ -206,6 +259,12 @@ export function validatePosition(position, content) {
   };
   for (const location of position.locations) {
     keys(location, ["definition", "revealed", "power", "cards"]);
+    if (
+      typeof location.definition === "string" &&
+      ID.test(location.definition) &&
+      !locations.has(location.definition)
+    )
+      throw Error("engine-missing-location: " + location.definition);
     if (
       !locations.has(location.definition) ||
       typeof location.revealed !== "boolean" ||
@@ -336,7 +395,15 @@ export function ironheartExample(content) {
     hidden_origin: "generated",
   };
 }
-function preview(position, request, id, names, version, content) {
+function preview(
+  position,
+  request,
+  id,
+  names,
+  version,
+  content,
+  confirmation = true
+) {
   const definitions = new Map(content.cards.map((c) => [c.id, c]));
   const name = (id) => names.get(id) || id;
   const card = (c) =>
@@ -358,7 +425,7 @@ function preview(position, request, id, names, version, content) {
       ? z.map(card).join("、")
       : "明确为空";
   const lines = [
-    `待确认推演 ${id}`,
+    `${confirmation ? "待确认推演" : "自动机制测试"} ${id}`,
     `规则：${version}；${position.mode}，第${position.turn}/${
       position.total_turns
     }回合，${position.priority === 0 ? "我方" : "对方"}先手。`,
@@ -419,7 +486,9 @@ function preview(position, request, id, names, version, content) {
         ? "至终局（后续未列动作均空过）"
         : "本回合结束并含下一回合开始效果"
     }，${request.seeds}个随机种子。`,
-    `请核对以上条件；缺失或错误请先补充。确认后原样回复：确认推演 ${id}`
+    confirmation
+      ? `请核对以上条件；缺失或错误请先补充。确认后原样回复：确认推演 ${id}`
+      : "以上为助手构造的机制测试假设，不代表提问者实战；结论仅适用于该场景。"
   );
   const text = lines.join("\n");
   if (text.length > 9000)
@@ -428,8 +497,81 @@ function preview(position, request, id, names, version, content) {
 }
 function safeError(error) {
   return String(error.stderr ?? error.message ?? "engine failed")
-    .replace(/\/(?:Users|Volumes|private|tmp)\/[^\s"']+/g, "[本机路径]")
+    .replace(/\/(?:Users|Volumes|private|tmp)\/[^\r\n"']+/g, "[本机路径]")
     .slice(0, 1200);
+}
+export function engineCatalogMatches(items, query, names) {
+  const norm = (v) =>
+    String(v ?? "")
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[\s·・\-_]/g, "");
+  const q = norm(query);
+  if (!q) return { items: [], method: "not-found" };
+  const exact = items.filter((c) =>
+    [c.id, names.get(c.id)].some((n) => norm(n) === q)
+  );
+  if (exact.length) return { items: exact, method: "exact" };
+  const partial = items.filter((c) =>
+    [c.id, names.get(c.id)].some((n) => norm(n).includes(q))
+  );
+  if (partial.length) return { items: partial, method: "substring" };
+  if (/^[\u3400-\u9fff]{2,8}$/.test(q)) {
+    const result = items.filter((c) => {
+      const name = norm(names.get(c.id));
+      let at = 0;
+      for (const ch of name) if (ch === q[at]) at++;
+      return at === q.length;
+    });
+    return { items: result, method: "name-subsequence" };
+  }
+  return { items: [], method: "not-found" };
+}
+export function explainEngineFailure(error) {
+  const detail = safeError(error);
+  let code = "engine-failed",
+    reason = "本机引擎执行失败，当前没有可用测试结论。";
+  const missing = /engine-missing-(card|location):\s*([A-Za-z0-9_]+)/.exec(
+    detail
+  );
+  const dependency =
+    /history-dependency:\s*(card|location)\s+([A-Za-z0-9_]+)/.exec(detail);
+  if (missing) {
+    code = "missing-definition";
+    reason = `当前国服引擎内容表未收录${
+      missing[1] === "card" ? "卡牌" : "地点"
+    } ${missing[2]}，无法运行此测试；不是测试证明该机制不生效。`;
+  } else if (dependency) {
+    code = "history-dependency";
+    reason = `${dependency[1] === "card" ? "卡牌" : "地点"} ${
+      dependency[2]
+    } 依赖未交代的历史；这个合成场景尚不能执行。需要在测试场景中构造必要前序事件，不能从空历史推断机制不生效。`;
+  } else if (
+    /unknown|unsupported|not implemented|not supported|unresolved|unsafe-approximation/i.test(
+      detail
+    )
+  ) {
+    code = "unsupported-state";
+    reason =
+      "当前引擎或简化局面入口不支持这项能力/状态；具体拒绝原因见detail，补一整盘用户信息不保证能解决。";
+  } else if (
+    /Invalid|Incomplete|contradict|mismatch|illegal|invalid|not enough|insufficient|must be|absent|requires|required/i.test(
+      detail
+    )
+  ) {
+    code = "invalid-scenario";
+    reason =
+      "构造的测试条件、动作或版本校验未通过；应修正测试场景，不能把这次失败当成机制结果。";
+  }
+  if (
+    error?.killed ||
+    error?.name === "AbortError" ||
+    error?.name === "TimeoutError"
+  ) {
+    code = "interrupted";
+    reason = "测试超时或被中止，没有可用结论。";
+  }
+  return { failureCode: code, reason, detail };
 }
 function projectState(value, includeCards = true) {
   const snapshot = value?.snapshot?.value?.snapshot;
@@ -585,6 +727,112 @@ export function createEngineService({
       closeSync(parent);
     }
   }
+  async function executeProposal(proposal, metadata) {
+    const id = proposal.id;
+    const positionFile = join(directory, id + ".position.json"),
+      output = join(directory, id + ".report.json");
+    writeFileSync(positionFile, JSON.stringify(proposal.position), {
+      mode: 0o600,
+      flag: "wx",
+    });
+    proposal.state = "running";
+    save(id, proposal);
+    const began = now();
+    try {
+      await run(
+        config.binary,
+        [
+          "simulate",
+          "--position",
+          positionFile,
+          "--out",
+          output,
+          "--seeds",
+          String(proposal.request.seeds),
+          "--until",
+          proposal.request.until,
+          "--content",
+          config.content,
+        ],
+        {
+          timeout: config.timeoutMs ?? 30000,
+          maxBuffer: 65536,
+          signal,
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            LANG: "en_US.UTF-8",
+            TMPDIR: directory,
+          },
+        }
+      );
+      const raw = bytes(output, 32 * 1024 * 1024),
+        report = JSON.parse(raw);
+      if (
+        report.seeds !== proposal.request.seeds ||
+        report.until !== proposal.request.until
+      )
+        throw Error("Engine report differs from request");
+      const summary = summarizeSimulation(report);
+      if (proposal.hypothetical)
+        summary.triggerCoverage = proposal.focus.map((entity) => ({
+          entity,
+          tracedRuns: report.runs.filter((r) =>
+            (r.resolution_trace ?? []).some((e) => e.source === entity)
+          ).length,
+          totalRuns: report.seeds,
+          effects: [
+            ...new Set(
+              report.runs.flatMap((r) =>
+                (r.resolution_trace ?? [])
+                  .filter((e) => e.source === entity)
+                  .map((e) => e.effect)
+              )
+            ),
+          ],
+        }));
+      proposal.state = "done";
+      proposal.summary = summary;
+      proposal.durationMs = now() - began;
+      proposal.reportSha256 = digest(raw);
+      save(id, proposal);
+      return {
+        status: "ok",
+        ...metadata,
+        id,
+        durationMs: proposal.durationMs,
+        summary,
+        ...taskMode(proposal),
+        note: proposal.hypothetical
+          ? "仅是助手构造场景的条件化引擎结果；程序跑完不代表目标机制已触发，须检查triggerCoverage和轨迹。不是用户实战、客户端实测或通用规则证明。"
+          : "这是用户确认条件下的Rust引擎推算，不是本次客户端实测。抽样分布仅是已声明先验/种子下的结果，不是实战胜率；完整报告保留本机，不把未指定后续动作当作最优出牌。",
+      };
+    } catch (error) {
+      proposal.state = "failed";
+      proposal.failure = explainEngineFailure(error);
+      save(id, proposal);
+      return {
+        status: "unsupported-or-failed",
+        ...metadata,
+        id,
+        ...proposal.failure,
+        ...taskMode(proposal),
+        note: proposal.hypothetical
+          ? "该机制测试没有可用结论。说明具体引擎/输入限制，不让用户为机制问题补整盘实战；不能把拒绝执行说成机制不生效。"
+          : "没有可用推演结论，不得脑补结果；只追问影响结果的关键条件。",
+      };
+    }
+  }
+  function taskMode(p) {
+    return p.hypothetical
+      ? {
+          hypothetical: true,
+          question: p.question,
+          assumptions: p.assumptions,
+          scenario: p.preview,
+          resultScope: "synthetic-scenario-only",
+        }
+      : {};
+  }
   const service = {
     async lookup(query, { scope, cards = [], locations = [] } = {}) {
       validateEngineLookup(query);
@@ -611,6 +859,19 @@ export function createEngineService({
             capabilities: [
               "detached-position-confirmation",
               "specified-actions-simulation",
+              ...(config.autoMechanismTests
+                ? ["automatic-synthetic-mechanism-test"]
+                : []),
+            ],
+            mechanismTests: {
+              enabled: config.autoMechanismTests === true,
+              kind: "engine_test",
+              required: ["position", "question", "assumptions", "focus"],
+              note: "机制问题允许自拟最小场景并直接运行；不能把假设当实战，不能跳过真实对局确认。焦点focus为待观察触发来源的实体ID；目标触发未出现时不能推断它不能触发。",
+            },
+            inputLimitations: [
+              "简化局面不能直接指定任意私有技能计数、开局标记或跨玩家原牌组归属；需要时应从可表达的前序动作构造，不能造字段或把它们当0来证明结论。",
+              "unresolved历史依赖不等于能力未实现；目录中有牌也不保证当前构造场景可执行。具体支持以真实运行及目标触发轨迹为准。",
             ],
             inputFormat: {
               schema: "snap-position/v1",
@@ -645,34 +906,158 @@ export function createEngineService({
           ].filter(([, name]) => name)
         );
         if (query.kind === "engine_catalog") {
-          const q = query.query.toLowerCase();
+          const foundCards = engineCatalogMatches(
+              content.cards,
+              query.query,
+              names
+            ),
+            foundLocations = engineCatalogMatches(
+              content.locations,
+              query.query,
+              names
+            );
           return {
-            status: "ok",
+            status:
+              foundCards.items.length || foundLocations.items.length
+                ? "ok"
+                : "not-found",
             ...metadata,
-            cards: content.cards
-              .filter((c) =>
-                [c.id, names.get(c.id)].some((n) =>
-                  n?.toLowerCase().includes(q)
-                )
-              )
-              .slice(0, 12)
-              .map((c) => ({
-                id: c.id,
-                name: names.get(c.id) ?? null,
-                cost: c.cost,
-                power: c.power,
-                type: c.type,
-              })),
-            locations: content.locations
-              .filter((l) =>
-                [l.id, names.get(l.id)].some((n) =>
-                  n?.toLowerCase().includes(q)
-                )
-              )
+            ambiguous:
+              foundCards.items.length + foundLocations.items.length > 1,
+            matchMethods: {
+              cards: foundCards.method,
+              locations: foundLocations.method,
+            },
+            cards: foundCards.items.slice(0, 12).map((c) => ({
+              id: c.id,
+              name: names.get(c.id) ?? null,
+              cost: c.cost,
+              power: c.power,
+              type: c.type,
+            })),
+            locations: foundLocations.items
               .slice(0, 8)
               .map((l) => ({ id: l.id, name: names.get(l.id) ?? null })),
-            note: "目录有定义不代表所有能力/组合已实现，最终仍可能因不支持或历史不明而拒绝。",
+            note: "简称候选只按本服已有名称检索，不代表任意昵称已确认；唯一候选可沿用该真实ID，多候选只澄清卡名。名称未命中不等于能力不支持；目录有定义也不保证组合已实现。",
           };
+        }
+        if (query.kind === "engine_test") {
+          if (config.autoMechanismTests !== true)
+            return {
+              status: "denied",
+              ...metadata,
+              reason: "维护者尚未启用自动机制测试；真实对局仍走确认入口。",
+            };
+          const binding = owner(scope, query.sender),
+            position = validatePosition(query.position, content),
+            request = {
+              seeds: query.seeds ?? 32,
+              until: query.until ?? "turn",
+            };
+          if (request.seeds > (config.maxSeeds ?? 128))
+            return {
+              status: "invalid",
+              ...metadata,
+              reason: "单次模拟样本超过本机执行边界。",
+            };
+          const entities = new Set(
+            [
+              ...position.locations.flatMap((l) => l.cards.flat()),
+              ...position.players.flatMap((p) =>
+                [p.hand, p.deck].filter(Array.isArray).flat()
+              ),
+            ].map((c) => c.entity)
+          );
+          if (query.focus.some((id) => !entities.has(id)))
+            throw Error("Test focus is absent from position");
+          const queryDigest = digest(
+            JSON.stringify({
+              binding,
+              source: scope.messages
+                .filter((m) => m.sender === binding.sender)
+                .map((m) => ({ id: m.id ?? null, text: m.text })),
+              position,
+              request,
+              question: query.question,
+              assumptions: query.assumptions,
+              focus: query.focus,
+            })
+          );
+          const id = queryDigest.slice(0, 16);
+          let previous;
+          try {
+            previous = JSON.parse(bytes(join(directory, id + ".json"), 131072));
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+          }
+          if (previous) {
+            if (
+              previous.queryDigest !== queryDigest ||
+              JSON.stringify(binding) !== JSON.stringify(previous.binding) ||
+              previous.binarySha256 !== proof.binarySha256 ||
+              previous.contentSha256 !== proof.contentSha256
+            )
+              return {
+                status: "denied",
+                ...metadata,
+                reason: "任务或引擎版本已改变，不能复用。",
+              };
+            if (previous.state === "done")
+              return {
+                status: "ok",
+                ...metadata,
+                id,
+                reused: true,
+                durationMs: previous.durationMs,
+                summary: previous.summary,
+                ...taskMode(previous),
+              };
+            if (previous.state === "failed")
+              return {
+                status: "unsupported-or-failed",
+                ...metadata,
+                id,
+                reused: true,
+                ...previous.failure,
+                ...taskMode(previous),
+                note: "复用同一失败结果，没有再次运行；不得编造机制结论。",
+              };
+            return {
+              status: "unknown",
+              ...metadata,
+              id,
+              ...taskMode(previous),
+              reason: "该任务此前已开始但结果不明，不自动重算。",
+            };
+          }
+          const proposal = {
+            schemaVersion: 1,
+            id,
+            queryDigest,
+            binding,
+            position,
+            request,
+            hypothetical: true,
+            question: query.question,
+            assumptions: query.assumptions,
+            focus: query.focus,
+            version: proof.version,
+            binarySha256: proof.binarySha256,
+            contentSha256: proof.contentSha256,
+            preview: preview(
+              position,
+              request,
+              id,
+              names,
+              proof.version,
+              content,
+              false
+            ),
+            state: "prepared",
+            createdAt: now(),
+          };
+          save(id, proposal);
+          return executeProposal(proposal, metadata);
         }
         if (query.kind === "engine_read") {
           const binding = owner(scope, query.sender),
@@ -694,6 +1079,8 @@ export function createEngineService({
               saved.binarySha256 !== proof.binarySha256 ||
               saved.contentSha256 !== proof.contentSha256,
             state: saved.state,
+            ...taskMode(saved),
+            failure: saved.failure ?? null,
             position: saved.position,
             request: saved.request,
             summary: saved.summary ?? null,
@@ -804,6 +1191,14 @@ export function createEngineService({
             ...metadata,
             reason: "提问者/群/账号或引擎版本不匹配，请重新准备。",
           };
+        if (proposal.hypothetical)
+          return {
+            status: "denied",
+            ...metadata,
+            id,
+            reason:
+              "这是自动机制测试任务，请用engine_read读取；真实对局需另建并确认完整条件。",
+          };
         const confirmed = scope.messages.some(
           (m) =>
             m.sender === binding.sender &&
@@ -833,74 +1228,7 @@ export function createEngineService({
             reason:
               "此任务之前已开始或失败，不自动重算；请重新准备一个新任务。",
           };
-        const positionFile = join(directory, id + ".position.json"),
-          output = join(directory, id + ".report.json");
-        writeFileSync(positionFile, JSON.stringify(proposal.position), {
-          mode: 0o600,
-          flag: "wx",
-        });
-        proposal.state = "running";
-        save(id, proposal);
-        const began = now();
-        try {
-          await run(
-            config.binary,
-            [
-              "simulate",
-              "--position",
-              positionFile,
-              "--out",
-              output,
-              "--seeds",
-              String(proposal.request.seeds),
-              "--until",
-              proposal.request.until,
-              "--content",
-              config.content,
-            ],
-            {
-              timeout: config.timeoutMs ?? 30000,
-              maxBuffer: 65536,
-              signal,
-              env: {
-                PATH: process.env.PATH ?? "/usr/bin:/bin",
-                LANG: "en_US.UTF-8",
-                TMPDIR: directory,
-              },
-            }
-          );
-          const raw = bytes(output, 32 * 1024 * 1024),
-            report = JSON.parse(raw);
-          if (
-            report.seeds !== proposal.request.seeds ||
-            report.until !== proposal.request.until
-          )
-            throw Error("Engine report differs from request");
-          const summary = summarizeSimulation(report);
-          proposal.state = "done";
-          proposal.summary = summary;
-          proposal.durationMs = now() - began;
-          proposal.reportSha256 = digest(raw);
-          save(id, proposal);
-          return {
-            status: "ok",
-            ...metadata,
-            id,
-            durationMs: proposal.durationMs,
-            summary,
-            note: "这是用户确认条件下的Rust引擎推算，不是本次客户端实测。抽样分布仅是已声明先验/种子下的结果，不是实战胜率；完整报告保留本机，不把未指定后续动作当作最优出牌。",
-          };
-        } catch (error) {
-          proposal.state = "failed";
-          save(id, proposal);
-          return {
-            status: "unsupported-or-failed",
-            ...metadata,
-            id,
-            reason: safeError(error),
-            note: "没有可用推演结论，不得脑补结果；缺失条件请向提问者澄清后重新准备。",
-          };
-        }
+        return executeProposal(proposal, metadata);
       } catch (error) {
         return {
           status: "unavailable",
@@ -908,6 +1236,7 @@ export function createEngineService({
           reason:
             "本机引擎未通过校验、任务不存在或输入条件不完整。" +
             safeError(error),
+          ...explainEngineFailure(error),
         };
       }
     },

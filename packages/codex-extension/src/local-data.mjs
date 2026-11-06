@@ -143,6 +143,9 @@ export function createLocalDataRouter(options) {
     get defaultRegion() {
       return current.defaultRegion;
     },
+    get engineAutoTests() {
+      return current.engineAutoTests;
+    },
     get engineEnabled() {
       return current.engineEnabled;
     },

@@ -438,6 +438,25 @@ A follow-up can read its own task with `engine_read`. Changing a condition uses
 conditions, and requires a fresh confirmation. Task files contain the proposed
 position, execution state and local report for recovery, not another chat store.
 
+Set `engine.autoMechanismTests: true` to let mechanism questions run a synthetic
+minimal scene with `engine_test`, without a confirmation round. This operator
+setting does not change the confirmation required for a person's actual match.
+The request includes `question`, explicit `assumptions`, a complete `position`,
+and `focus` entity IDs for the trigger sources under examination. Missing real
+match details are not silently filled into a synthetic scene and presented as
+facts. The model can construct a new hypothesis instead of asking for a full
+board, but must report its conditions and the scope of the result.
+
+The response keeps the actual engine rejection as a classified reason and safe
+detail, or returns a conditional simulation with trigger coverage. A simulation
+finishing does not establish that the intended mechanism was reached: an absent
+target trace cannot prove an interaction impossible. History dependencies,
+private-state limitations, invalid setups and execution failures are explained
+separately. A history-analysis `unresolved` flag alone is not a capability test.
+Identical tests from the same input reuse their stored result, including a
+failure; other senders/groups cannot read the task. The normal `engine_prepare`
+and `engine_confirm` flow continues to serve actual-match reconstruction.
+
 An optional operator-owned persona, for example
 `persona: { "profile": "tablemate", "name": "小派", "humor": "light" }`, sets a
 short communication style. Profiles are `tablemate`, `neutral`, or `character`;

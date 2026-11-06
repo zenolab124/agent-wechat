@@ -125,7 +125,7 @@ export class CodexClient {
     if (options.conversation && options.conversation.profile !== this.profile) throw Error('Conversation belongs to another Codex profile');
     const settings = {
       cwd: this.cwd, model: this.model ?? null, sandbox: 'read-only', approvalPolicy: 'never',
-      runtimeWorkspaceRoots: [], baseInstructions: groupInstructions(!!this.snapLookup,this.persona), developerInstructions: outputInstructions(this.model, this.snapLookup?.defaultRegion, this.snapLookup?.engineEnabled),
+      runtimeWorkspaceRoots: [], baseInstructions: groupInstructions(!!this.snapLookup,this.persona), developerInstructions: outputInstructions(this.model, this.snapLookup?.defaultRegion, this.snapLookup?.engineEnabled, this.snapLookup?.engineAutoTests),
     };
     const result = options.conversation
       ? await this.request('thread/resume', { ...settings, threadId: options.conversation.threadId, excludeTurns: true })
@@ -176,7 +176,7 @@ export class CodexClient {
         }
         const results = await this.snapLookup.lookup(decision.lookup, {imageDeckAllowed:context.deckImageRequest?.authorized===true,imageDeckIndex:context.deckImageRequest?.imageIndex,scope:options.scope});
         for(const result of results) if(result.query?.kind?.startsWith('engine_')) {
-          engineOperations.push({kind:result.query.kind,status:result.status,id:result.id??null,version:result.version??null,durationMs:result.durationMs??null,reused:result.reused===true});
+          engineOperations.push({kind:result.query.kind,status:result.status,id:result.id??null,version:result.version??null,durationMs:result.durationMs??null,reused:result.reused===true,hypothetical:result.hypothetical===true,failureCode:result.failureCode??null});
           if(result.status==='awaiting-confirmation'&&typeof result.replyText==='string') enginePreview=result.replyText;
         }
         if(enginePreview) {

@@ -65,7 +65,7 @@ export function validateLookups(value) {
     throw Error("Invalid SNAP lookup batch");
   if (
     value.filter((item) =>
-      ["engine_prepare", "engine_confirm"].includes(item?.kind)
+      ["engine_prepare", "engine_confirm", "engine_test"].includes(item?.kind)
     ).length > 1
   )
     throw Error("One simulation operation per reply");
@@ -497,6 +497,7 @@ export function createSnapLookup({
     inspect,
     defaultRegion: snap.defaultRegion,
     engineEnabled: !!engine,
+    engineAutoTests:engine?.autoMechanismTests===true,
     async lookup(
       requests,
       { imageDeckAllowed = false, imageDeckIndex, scope } = {}

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import {
+  engineCatalogMatches,
   createEngineService,
   validateEngineConfig,
   validateEngineLookup,
@@ -73,7 +74,10 @@ const report = () => ({
   ],
   distribution: [{ probability: 1, count: 1, state: state(5) }],
 });
-function harness(t, { fail = false, tamper = false } = {}) {
+function harness(
+  t,
+  { fail = false, tamper = false, stderr = "/Users/private/secret fail" } = {}
+) {
   const root = mkdtempSync(join(tmpdir(), "wx-engine-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const binary = join(root, "engine"),
@@ -101,7 +105,7 @@ function harness(t, { fail = false, tamper = false } = {}) {
       calls.push({ file, args, options });
       if (fail)
         throw Object.assign(Error("timed out"), {
-          stderr: "/Users/private/secret fail",
+          stderr,
         });
       const r = report();
       r.seeds = Number(args[args.indexOf("--seeds") + 1]);
@@ -354,4 +358,159 @@ test("follow-up reads only the same owner, inherits unchanged conditions and req
     ).status,
     "denied"
   );
+});
+function mechanismQuery(extra = {}) {
+  return {
+    kind: "engine_test",
+    region: "cn",
+    question: "铁心会给对手加战力吗",
+    assumptions: ["假设空牌库、无其他历史，双方各有一张普通牌，我方打出铁心"],
+    focus: [100],
+    position: ironheartExample(content),
+    seeds: 1,
+    ...extra,
+  };
+}
+
+test("operator-enabled mechanism test runs without confirmation, keeps hypothetical scope and deduplicates the same source", async (t) => {
+  const f = harness(t);
+  f.config.autoMechanismTests = true;
+  const scope = f.scope("铁心会给对手加战力吗"),
+    q = mechanismQuery();
+  const r = await f.service.lookup(q, { scope });
+  assert.equal(r.status, "ok");
+  assert.equal(r.hypothetical, true);
+  assert.equal(r.resultScope, "synthetic-scenario-only");
+  assert.equal(f.calls.length, 1);
+  assert.match(r.scenario, /自动机制测试/);
+  assert.ok(!r.scenario.includes("确认推演"));
+  assert.equal(r.summary.triggerCoverage[0].tracedRuns, 1);
+  const again = await f.service.lookup(q, { scope });
+  assert.equal(again.reused, true);
+  assert.equal(f.calls.length, 1);
+  const read = await f.service.lookup(
+    { kind: "engine_read", region: "cn", id: r.id },
+    { scope }
+  );
+  assert.equal(read.hypothetical, true);
+  assert.deepEqual(read.assumptions, q.assumptions);
+  assert.equal((await f.confirm(r.id)).status, "denied");
+  assert.equal(f.calls.length, 1);
+  assert.equal(
+    (
+      await f.service.lookup(
+        { kind: "engine_read", region: "cn", id: r.id },
+        { scope: f.scope("看一下", "other") }
+      )
+    ).status,
+    "denied"
+  );
+});
+test("automatic tests cannot be enabled by chat/model fields, and real prepare still waits for its own confirmation", async (t) => {
+  const f = harness(t);
+  assert.equal(
+    (await f.service.lookup(mechanismQuery(), { scope: f.scope() })).status,
+    "denied"
+  );
+  assert.equal(f.calls.length, 0);
+  assert.throws(() =>
+    validateEngineLookup(mechanismQuery({ confirmed: true }))
+  );
+  assert.throws(() =>
+    validateEngineConfig({ ...f.config, autoMechanismTests: "true" })
+  );
+  f.config.autoMechanismTests = true;
+  const p = await f.prepare();
+  assert.equal(p.status, "awaiting-confirmation");
+  assert.equal(f.calls.length, 0);
+  for (const q of [
+    mechanismQuery({ assumptions: [] }),
+    mechanismQuery({ focus: [] }),
+    mechanismQuery({ question: "" }),
+  ])
+    assert.throws(() => validateEngineLookup(q));
+  assert.notEqual(
+    (
+      await f.service.lookup(mechanismQuery({ focus: [333] }), {
+        scope: f.scope(),
+      })
+    ).status,
+    "ok"
+  );
+  assert.throws(() =>
+    validateLookups([
+      mechanismQuery(),
+      { kind: "engine_prepare", region: "cn", example: "ironheart" },
+    ])
+  );
+});
+test("a completed simulation with absent target trace does not manufacture a trigger, and different messages have distinct test identities", async (t) => {
+  const f = harness(t);
+  f.config.autoMechanismTests = true;
+  const q = mechanismQuery({ focus: [102] });
+  const r = await f.service.lookup(q, { scope: f.scope("第一条") });
+  assert.equal(r.summary.triggerCoverage[0].tracedRuns, 0);
+  assert.deepEqual(r.summary.triggerCoverage[0].effects, []);
+  const next = await f.service.lookup(q, { scope: f.scope("第二条") });
+  assert.notEqual(next.id, r.id);
+  assert.equal(f.calls.length, 2);
+});
+test("mechanism failures expose actual dependency and never ask for an entire real match or rerun the same failed test", async (t) => {
+  const f = harness(t, {
+    fail: true,
+    stderr:
+      "Error: history-dependency: card Stryfe; missing=[UnknownHistory { fact: PlayedBy }]",
+  });
+  f.config.autoMechanismTests = true;
+  const q = mechanismQuery(),
+    scope = f.scope();
+  const r = await f.service.lookup(q, { scope });
+  assert.equal(r.status, "unsupported-or-failed");
+  assert.equal(r.failureCode, "history-dependency");
+  assert.match(r.reason, /Stryfe/);
+  assert.match(r.detail, /PlayedBy/);
+  assert.equal(r.summary, undefined);
+  assert.match(r.note, /不让用户/);
+  const again = await f.service.lookup(q, { scope });
+  assert.equal(again.reused, true);
+  assert.equal(again.failureCode, "history-dependency");
+  assert.equal(f.calls.length, 1);
+});
+
+test("mechanism catalog resolves local name abbreviations and retains ambiguity instead of inventing a card", () => {
+  const items = [{ id: "ZombieGalacti" }, { id: "Galactus" }, { id: "Stryfe" }],
+    names = new Map([
+      ["ZombieGalacti", "丧尸吞星"],
+      ["Galactus", "吞星"],
+      ["Stryfe", "斯特里夫"],
+    ]);
+  const r = engineCatalogMatches(items, "丧吞", names);
+  assert.equal(r.method, "name-subsequence");
+  assert.deepEqual(
+    r.items.map((c) => c.id),
+    ["ZombieGalacti"]
+  );
+  assert.deepEqual(
+    engineCatalogMatches(items, "吞星", names).items.map((c) => c.id),
+    ["Galactus"]
+  );
+  assert.equal(
+    engineCatalogMatches(items, "不存在的牌", names).items.length,
+    0
+  );
+  names.set("Stryfe", "丧尸吞月");
+  assert.equal(engineCatalogMatches(items, "丧吞", names).items.length, 2);
+});
+
+test("missing regional definitions have a concrete cause and never execute a substitute", async (t) => {
+  const f = harness(t);
+  f.config.autoMechanismTests = true;
+  const p = ironheartExample(content);
+  p.players[0].hand[0].definition = "MissingCNCard";
+  const r = await f.service.lookup(mechanismQuery({ position: p }), {
+    scope: f.scope(),
+  });
+  assert.equal(r.failureCode, "missing-definition");
+  assert.match(r.reason, /MissingCNCard/);
+  assert.equal(f.calls.length, 0);
 });

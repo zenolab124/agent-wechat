@@ -34,7 +34,7 @@ const time = (value) => {
     : "";
 };
 const lookupLabel = (query) => {
-  if (query?.kind?.startsWith("engine_")) return ({engine_status:"引擎能力与格式",engine_read:"读取推演："+(query.id??""),engine_catalog:"引擎目录："+(query.query??""),engine_prepare:"准备局面核对",engine_confirm:"确认推演："+(query.id??"")})[query.kind]??query.kind;
+  if (query?.kind?.startsWith("engine_")) return ({engine_test:"自动机制测试",engine_status:"引擎能力与格式",engine_read:"读取推演："+(query.id??""),engine_catalog:"引擎目录："+(query.query??""),engine_prepare:"准备局面核对",engine_confirm:"确认推演："+(query.id??"")})[query.kind]??query.kind;
   if (query?.kind === "recent_cards") return "按上线日期查询近期卡牌";
   if (query?.kind === "location") return `地点：${query.query ?? ""}`;
   if (query?.kind === "location_schedule")
@@ -314,6 +314,7 @@ function render(data) {
         )
       );
     for(const operation of task.engineOperations??[]) row.append(el("small",`${lookupLabel(operation)} · ${operation.status}${operation.version?" · "+operation.version:""}${operation.id?" · "+operation.id:""}${operation.durationMs!==null?" · 引擎计算 "+(operation.durationMs/1000).toFixed(3)+" 秒":""}${operation.reused?" · 复用结果":""}`));
+    for(const operation of task.engineOperations??[]) if(operation.hypothetical||operation.failureCode) row.append(el("small",`${operation.hypothetical?"助手构造的机制测试假设":"真实对局推演"}${operation.failureCode?" · 原因分类："+operation.failureCode:""}`));
     if(task.deliveryText) {const detail=el("details");detail.append(el("summary","本轮实际发送文本"),el("pre",task.deliveryText));row.append(detail);}
     const stages = [
       ["waitMs", "等待"],
