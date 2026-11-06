@@ -457,6 +457,31 @@ Identical tests from the same input reuse their stored result, including a
 failure; other senders/groups cannot read the task. The normal `engine_prepare`
 and `engine_confirm` flow continues to serve actual-match reconstruction.
 
+For start-of-game, loading, initial-deck markers or opening-hand mechanics, use
+`engine_opening_test` (same operator setting), not a detached position with
+`turn: 1`. `engine_status.openingTests` describes the input: two synthetic
+12-card decks, three locations, fixed seed, and ordered per-turn actions by
+card ID. The adapter uses the installed Rust replay's initialization and two
+join requests, then resolves entities from actual snapshots. Undrawn cards and
+illegal actions are explicit construction failures, never silently inserted.
+Reports and `engine_read` preserve the opening construction for follow-ups.
+This path exposes request snapshots, not per-trigger private counters; it must
+not invent loading/reveal counts. Selected seeds are test conditions, not an
+opponent distribution or win rate. No client comparison host is invoked.
+
+Image conversion accepts short native-mention requests such as `@助手 转卡组码`,
+including a quote of the sender's image. Recognition distinguishes the deck
+area from adjacent collection cards and can review uncertain printed names
+against local regional candidates in the same image. Partial unique printed
+names may match, but ambiguous names, uncertain slots and duplicate cards never
+produce a code. Candidates and observed cost/power aid visual review, not
+identity proof. Authorized image recognition uses medium reasoning; ordinary
+chat keeps its current effort. Successful encoding sends the program's full
+validated text directly and retains it in the same group conversation. Game
+import acceptance is separate from a successful local code round-trip.
+Invalid lookup schemas are returned to the same model conversation for bounded
+format correction without executing the rejected request.
+
 An optional operator-owned persona, for example
 `persona: { "profile": "tablemate", "name": "小派", "humor": "light" }`, sets a
 short communication style. Profiles are `tablemate`, `neutral`, or `character`;

@@ -113,7 +113,9 @@ export class CodexClient {
         try {
           const decision = JSON.parse(turn.text.trim());
           if (turn.allowLookup && Object.keys(decision).length === 1 && decision.lookup) {
-            turn.resolve({ lookup: validateLookups(decision.lookup), usage: turn.usage ?? null }); return;
+            try { turn.resolve({ lookup: validateLookups(decision.lookup), usage: turn.usage ?? null }); }
+            catch(error) { turn.resolve({protocolError:{code:'invalid-lookup',reason:error.message},usage:turn.usage??null}); }
+            return;
           }
           if (typeof decision.reply !== 'boolean') throw Error();
           turn.resolve({ reply: decision.reply, ...(decision.reply ? { text: decision.text } : {}), usage: turn.usage ?? null });
@@ -150,7 +152,7 @@ export class CodexClient {
       let inputContext = context, requests = 0, completeUsage = true;
       const combined = Object.fromEntries(TOKEN_FIELDS.map(key => [key, 0]));
       const permittedCodes = new Set();
-      let enginePreview; const engineOperations=[];
+      let enginePreview, protocolCorrections=0; const engineOperations=[];
       while (Date.now() < deadline) {
         const final = new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
@@ -163,12 +165,17 @@ export class CodexClient {
         });
         final.catch(() => {});
         if (options.imagePaths && (!Array.isArray(options.imagePaths) || options.imagePaths.length > 4 || options.imagePaths.some(path => typeof path !== 'string' || !path.startsWith('/')))) throw Error('Invalid bounded image input');
-        const started = await this.request('turn/start', { threadId, input: [{ type: 'text', text: JSON.stringify(inputContext) }, ...(requests === 0 ? options.imagePaths ?? [] : []).map(path => ({ type: 'localImage', path }))], environments: [], runtimeWorkspaceRoots: [], effort: 'low' });
+        const started = await this.request('turn/start', { threadId, input: [{ type: 'text', text: JSON.stringify(inputContext) }, ...(requests === 0 ? options.imagePaths ?? [] : []).map(path => ({ type: 'localImage', path }))], environments: [], runtimeWorkspaceRoots: [], effort: context.deckImageRequest?.authorized===true ? 'medium' : 'low' });
         const turn = this.turns.get(threadId);
         if (turn) { turn.turnId = started.turn.id; turn.awaitingStart = false; const buffer = turn.buffer; turn.buffer = []; for (const event of buffer) this.onMessage(event); }
         const decision = await final; requests++; completedRequests++;
         if (!decision.usage) completeUsage = false;
         else for (const key of TOKEN_FIELDS) combined[key] += decision.usage[key];
+        if(decision.protocolError) {
+          if(++protocolCorrections>2) throw Object.assign(Error('Codex lookup schema could not be corrected'),{usage:completeUsage?tokenUsage(combined):null});
+          inputContext={lookupValidation:decision.protocolError,executed:false,instruction:'本次查询未通过格式校验，未执行任何操作。请根据原因修正JSON；一次lookup最多8项，一次最多一个模拟操作。开局构造格式请先单独查engine_status，不向用户索取整盘来修正接口格式。'};
+          continue;
+        }
         if (!decision.lookup) {
           const codes = decision.reply ? issuedDeckCodes(decision.text) : [];
           if (codes.some(code => !permittedCodes.has(code))) return {reply:true,text:'这次生成的卡组码未通过本地校验。请明确指定本地卡组；若要把图片转成卡组码，请原生@我并说明转换请求。',usage:completeUsage?tokenUsage(combined):null,modelRequests:requests};
@@ -178,6 +185,11 @@ export class CodexClient {
         for(const result of results) if(result.query?.kind?.startsWith('engine_')) {
           engineOperations.push({kind:result.query.kind,status:result.status,id:result.id??null,version:result.version??null,durationMs:result.durationMs??null,reused:result.reused===true,hypothetical:result.hypothetical===true,failureCode:result.failureCode??null});
           if(result.status==='awaiting-confirmation'&&typeof result.replyText==='string') enginePreview=result.replyText;
+        }
+        const imageDeckResult=results.find(r=>r.query?.kind==='encode_image_deck'&&r.status==='ok'&&r.offline&&typeof r.replyText==='string'&&typeof r.code==='string');
+        if(imageDeckResult) {
+          await this.request('thread/inject_items',{threadId,items:[{type:'message',role:'user',content:[{type:'input_text',text:JSON.stringify({snapLookupResults:results})}]},{type:'message',role:'assistant',phase:'final_answer',content:[{type:'output_text',text:JSON.stringify({reply:true,text:imageDeckResult.replyText})}]}]});
+          return {reply:true,text:imageDeckResult.replyText,verifiedDeckCode:true,usage:completeUsage?tokenUsage(combined):null,modelRequests:requests};
         }
         if(enginePreview) {
           // The preview is program output, so send it without paying for a

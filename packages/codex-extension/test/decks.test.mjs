@@ -40,7 +40,9 @@ const request = {
 
 test("official deck codes round-trip UTF-8 names and tolerate official share comments; bad compositions are refused", () => {
   const code = encodeDeck(ids, "国服截图");
-  assert.ok(issuedDeckCodes(code.slice(0,120)+'\n'+code.slice(120)).length > 0);
+  assert.ok(
+    issuedDeckCodes(code.slice(0, 120) + "\n" + code.slice(120)).length > 0
+  );
   assert.deepEqual(decodeDeck("# 卡组\n" + code), {
     ids,
     name: "国服截图",
@@ -205,4 +207,55 @@ test("deck lookup protocol cannot inject URLs, extra fields or unbounded card sl
     { kind: "decode_deck", region: "cn", query: "x".repeat(12001) },
   ])
     assert.throws(() => validateDeckLookup(bad));
+});
+
+test("native mention with short conversion commands is accepted without extra polite words", () => {
+  const base = { mentions: { state: "known", userIds: ["bot"] } };
+  for (const body of [
+    "@1234567\u2005转卡组码",
+    "@助手 转套牌码",
+    "@助手 转成卡组码",
+    "@助手 卡组转代码",
+  ])
+    assert.equal(imageDeckRequest({ ...base, body }, "bot"), true, body);
+  for (const body of [
+    "@助手 不要转卡组码",
+    "@助手 不用生成卡组码",
+    "@助手 卡组码是什么",
+  ])
+    assert.equal(imageDeckRequest({ ...base, body }, "bot"), false, body);
+  assert.equal(
+    imageDeckRequest(
+      { body: "转卡组码", mentions: { state: "known", userIds: [] } },
+      "bot"
+    ),
+    false
+  );
+});
+
+test("image printed short names resolve only when unique; unresolved slots expose regional review candidates without issuing a code", () => {
+  const regional = [
+    ...cards,
+    { key: "Uatu", name: "乌阿图观察者", cost: 0, power: 1, collectible: true },
+  ];
+  const r = structuredClone(request);
+  r.cards[0] = { query: "观察者", confidence: "clear", cost: 0, power: 1 };
+  validateDeckLookup(r);
+  assert.equal(imageDeckCode(r, regional, true).cardIds[0], "Uatu");
+  r.cards[0].confidence = "uncertain";
+  const pending = imageDeckCode(r, regional, true);
+  assert.equal(pending.code, undefined);
+  assert.deepEqual(pending.uncertainSlots, [1]);
+  assert.equal(pending.recognition[0].candidates[0].key, "Uatu");
+  assert.ok(pending.nextAction.includes("复核"));
+  assert.equal(pending.recognition[1].matched.key, "Card1");
+  regional.push({ key: "Other", name: "另一个观察者", collectible: true });
+  r.cards[0].confidence = "clear";
+  assert.equal(imageDeckCode(r, regional, true).status, "needs-confirmation");
+  assert.throws(() =>
+    validateDeckLookup({
+      ...r,
+      cards: r.cards.map((s) => ({ ...s, cost: "0" })),
+    })
+  );
 });

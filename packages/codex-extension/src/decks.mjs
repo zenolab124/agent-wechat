@@ -60,10 +60,19 @@ export function validateDeckLookup(item) {
       item.cards.some(
         (slot) =>
           !slot ||
-          Object.keys(slot).some((k) => !["query", "confidence"].includes(k)) ||
+          Object.keys(slot).some(
+            (k) => !["query", "confidence", "cost", "power"].includes(k)
+          ) ||
           typeof slot.query !== "string" ||
           slot.query.length > 100 ||
-          !["clear", "uncertain"].includes(slot.confidence)
+          !["clear", "uncertain"].includes(slot.confidence) ||
+          ["cost", "power"].some(
+            (k) =>
+              slot[k] !== undefined &&
+              (!Number.isSafeInteger(slot[k]) ||
+                slot[k] < -1000 ||
+                slot[k] > 1000)
+          )
       ) ||
       (item.name !== undefined &&
         (typeof item.name !== "string" || item.name.length > 80))
@@ -163,16 +172,29 @@ export function directlyMentioned(message, ownUsername) {
   );
 }
 export function imageDeckRequest(message, ownUsername) {
+  const command =
+    typeof message.body === "string"
+      ? message.body
+          .replace(/^@.*?\u2005/, "")
+          .replace(/^@\S+\s+/, "")
+          .trim()
+      : "";
+  const shortRequest =
+    /^(?:(?:转(?:成|为|换)?|生成|做成)(?:卡组|套牌)(?:代)?码|(?:卡组|套牌)转(?:成|为)?(?:代)?码)[。！!？?\s]*$/.test(
+      command
+    );
   return (
     directlyMentioned(message, ownUsername) &&
     typeof message.body === "string" &&
     !/(?:不要|不用|不必|无需|先不|别).{0,12}(?:转|生成|做|给|卡组码|套牌码)/.test(
       message.body
     ) &&
-    /(?:卡组|套牌|卡牌|导入)(?:代)?码|deck\s*code/i.test(message.body) &&
-    /(?:帮我|帮忙|请.{0,15}(?:转|生成|做|给|识别)|转成|转换|生成|做成|给我|识别)/.test(
+    (/(?:卡组|套牌|卡牌|导入)(?:代)?码|deck\s*code/i.test(message.body) ||
+      shortRequest) &&
+    (/(?:帮我|帮忙|请.{0,15}(?:转|生成|做|给|识别)|转成|转换|生成|做成|给我|识别)/.test(
       message.body
-    )
+    ) ||
+      shortRequest)
   );
 }
 export function resolveCard(cards, query) {
@@ -252,7 +274,7 @@ export function imageDeckCode(request, cards, allowed) {
       reason: "截图转码需要当前发言人原生@助手并明确请求，且已绑定本次图片。",
     };
   const resolved = request.cards.map((slot) =>
-    slot.confidence === "clear" ? resolveCard(cards, slot.query) : null
+    slot.confidence === "clear" ? resolveSearchCard(cards, slot.query) : null
   );
   const missing = resolved.flatMap((card, index) =>
     !card || !card.collectible ? [index + 1] : []
@@ -267,8 +289,44 @@ export function imageDeckCode(request, cards, allowed) {
         missing.length
           ? `第${missing.join("、")}张卡看不清或无法在本服目录中唯一核对`
           : "识别结果有重复卡牌"
-      }，请发清晰原图，或引用原图并@我，补充不确定位置的卡名，我再核对。`,
+      }。已收到本次@及转码请求，无需重复授权；如果复核后仍不清楚，只需补充这些位置的卡名。`,
       uncertainSlots: missing,
+      recognition: request.cards.map((slot, index) => ({
+        slot: index + 1,
+        observed: slot,
+        matched: resolved[index]
+          ? { key: resolved[index].key, name: resolved[index].name }
+          : null,
+        // Candidates assist another visual inspection; they never authorize code generation.
+        candidates: cards
+          .filter((c) => c.collectible)
+          .map((c) => {
+            const q = normalizeCardName(slot.query),
+              n = normalizeCardName(c.name);
+            let score =
+              q && (n.includes(q) || q.includes(n))
+                ? 8
+                : q
+                ? [...new Set(q)].filter((x) => n.includes(x)).length
+                : 0;
+            if (slot.cost !== undefined && c.cost === slot.cost) score += 2;
+            if (slot.power !== undefined && c.power === slot.power) score += 2;
+            return { card: c, score };
+          })
+          .filter((c) => c.score > 0)
+          .sort(
+            (a, b) => b.score - a.score || a.card.key.localeCompare(b.card.key)
+          )
+          .slice(0, 16)
+          .map(({ card: c }) => ({
+            key: c.key,
+            name: c.name,
+            cost: c.cost,
+            power: c.power,
+          })),
+      })),
+      nextAction:
+        "请先在同一张绑定图片上复核未确定位置，参考本服候选的全名、卡图和可见字形；数值只是线索，不能用数值或常见卡组替代识图。能确认则再次encode_image_deck；仍不能确认才向用户只询问剩余槽位。",
     };
   const ids = resolved.map((card) => card.key),
     name = request.name ?? "截图卡组",

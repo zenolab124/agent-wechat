@@ -1,3 +1,8 @@
+import {
+  validateOpeningLookup,
+  normalizeOpening,
+  replayOpening,
+} from "./opening.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -69,6 +74,10 @@ export function validateEngineConfig(config) {
     throw Error("Invalid local engine configuration");
 }
 export function validateEngineLookup(query) {
+  if (query?.kind === "engine_opening_test") {
+    validateOpeningLookup(query);
+    return;
+  }
   const allowed = {
     engine_status: ["kind", "region"],
     engine_catalog: ["kind", "region", "query"],
@@ -536,7 +545,11 @@ export function explainEngineFailure(error) {
   );
   const dependency =
     /history-dependency:\s*(card|location)\s+([A-Za-z0-9_]+)/.exec(detail);
-  if (missing) {
+  if (/opening-card-unavailable|opening-action-rejected/.test(detail)) {
+    code = "opening-action-unavailable";
+    reason =
+      "该开局种子/回合下，指定牌未在可操作区域或动作被引擎拒绝。应调整测试的种子、回合或合法动作；未完成测试不能证明机制无效。";
+  } else if (missing) {
     code = "missing-definition";
     reason = `当前国服引擎内容表未收录${
       missing[1] === "card" ? "卡牌" : "地点"
@@ -822,6 +835,59 @@ export function createEngineService({
       };
     }
   }
+  async function executeOpening(proposal, metadata, content) {
+    proposal.state = "running";
+    save(proposal.id, proposal);
+    const began = now();
+    try {
+      const result = await replayOpening({
+        config,
+        content,
+        opening: proposal.opening,
+        focus: proposal.focus,
+        seeds: proposal.request.seeds,
+        firstSeed: proposal.request.firstSeed,
+        directory,
+        id: proposal.id,
+        run,
+        signal,
+        now,
+      });
+      const raw = JSON.stringify(result.report);
+      writeFileSync(join(directory, proposal.id + ".report.json"), raw, {
+        mode: 0o600,
+        flag: "wx",
+      });
+      proposal.state = "done";
+      proposal.summary = result.summary;
+      proposal.durationMs = now() - began;
+      proposal.reportSha256 = digest(raw);
+      save(proposal.id, proposal);
+      return {
+        status: "ok",
+        ...metadata,
+        id: proposal.id,
+        ...taskMode(proposal),
+        construction: "from-start",
+        openingInitialized: true,
+        summary: proposal.summary,
+        durationMs: proposal.durationMs,
+      };
+    } catch (error) {
+      proposal.state = "failed";
+      proposal.failure = explainEngineFailure(error);
+      save(proposal.id, proposal);
+      return {
+        status: "unsupported-or-failed",
+        ...metadata,
+        id: proposal.id,
+        ...taskMode(proposal),
+        construction: "from-start",
+        ...proposal.failure,
+        note: "从开局构造未完成，不是该机制不生效；不要回退成空历史注入后宣称完成开局验证。",
+      };
+    }
+  }
   function taskMode(p) {
     return p.hypothetical
       ? {
@@ -868,6 +934,41 @@ export function createEngineService({
               kind: "engine_test",
               required: ["position", "question", "assumptions", "focus"],
               note: "机制问题允许自拟最小场景并直接运行；不能把假设当实战，不能跳过真实对局确认。焦点focus为待观察触发来源的实体ID；目标触发未出现时不能推断它不能触发。",
+            },
+            openingTests: {
+              kind: "engine_opening_test",
+              enabled: config.autoMechanismTests === true,
+              fields: {
+                question: "机制问题",
+                assumptions: "自拟条件列表",
+                focus: "卡牌ID数组",
+                seeds: "默认1，可1..128",
+                firstSeed: "起始非负整数，默认0",
+                opening: {
+                  mode: "Ranked等已装模式",
+                  start: "带时区ISO时间",
+                  decks: "双方各12张不同的国服卡ID",
+                  locations: "3个国服地点ID",
+                  throughTurn: "模拟至该回合结束，1..7",
+                  actions:
+                    "有序{kind:play/move/activate,turn,player:0/1,card:本服ID,lane:0..2（激活不填lane）}",
+                },
+              },
+              syntheticDeckExample: [
+                "MistyKnight",
+                "Shocker",
+                "Cyclops",
+                "Hulk",
+                "Abomination",
+                "TheThing",
+                "IronMan",
+                "Medusa",
+                "Hawkeye",
+                "Starlord",
+                "Odin",
+                "Ironheart",
+              ].filter((id) => content.cards.some((c) => c.id === id)),
+              note: "真正运行已签名Rust程序的Game::new_in_mode和双方JoinRequest，经开局效果/洗牌/起手再逐回合请求；不是设置turn=1。未列动作空过；需要的牌未抽到或动作非法则返回具体原因，不偷偷生成牌。可先空过看牌序再选择合法测试种子/动作，不把挑选的种子当概率样本。当前此入口仅有请求前后快照，不提供逐触发内部轨迹。",
             },
             inputLimitations: [
               "简化局面不能直接指定任意私有技能计数、开局标记或跨玩家原牌组归属；需要时应从可表达的前序动作构造，不能造字段或把它们当0来证明结论。",
@@ -934,12 +1035,126 @@ export function createEngineService({
               cost: c.cost,
               power: c.power,
               type: c.type,
+              catalogDescription:
+                cards.find((card) => card.key === c.id)?.description ?? null,
             })),
             locations: foundLocations.items
               .slice(0, 8)
               .map((l) => ({ id: l.id, name: names.get(l.id) ?? null })),
-            note: "简称候选只按本服已有名称检索，不代表任意昵称已确认；唯一候选可沿用该真实ID，多候选只澄清卡名。名称未命中不等于能力不支持；目录有定义也不保证组合已实现。",
+            note: "简称候选只按本服已有名称检索，不代表任意昵称已确认；结合用户限定词辨认同名ID，唯一候选可沿用该真实ID。catalogDescription来自本服本地目录，仅供辨认，不当作引擎版本实时文本。名称未命中不等于能力不支持；目录有定义也不保证组合已实现。",
           };
+        }
+        if (query.kind === "engine_opening_test") {
+          if (config.autoMechanismTests !== true)
+            return {
+              status: "denied",
+              ...metadata,
+              reason: "维护者尚未启用自动机制测试。",
+            };
+          const binding = owner(scope, query.sender),
+            opening = normalizeOpening(query, content),
+            request = {
+              seeds: query.seeds ?? 1,
+              firstSeed: query.firstSeed ?? 0,
+            };
+          if (request.seeds > (config.maxSeeds ?? 128))
+            return {
+              status: "invalid",
+              ...metadata,
+              reason: "单次样本超过本机执行边界。",
+            };
+          const queryDigest = digest(
+              JSON.stringify({
+                binding,
+                source: scope.messages
+                  .filter((m) => m.sender === binding.sender)
+                  .map((m) => ({ id: m.id ?? null, text: m.text })),
+                opening,
+                request,
+                question: query.question,
+                assumptions: query.assumptions,
+                focus: query.focus,
+              })
+            ),
+            id = queryDigest.slice(0, 16);
+          let old;
+          try {
+            old = JSON.parse(bytes(join(directory, id + ".json"), 131072));
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+          }
+          if (old) {
+            if (
+              old.queryDigest !== queryDigest ||
+              old.binarySha256 !== proof.binarySha256 ||
+              old.contentSha256 !== proof.contentSha256 ||
+              JSON.stringify(old.binding) !== JSON.stringify(binding)
+            )
+              return {
+                status: "denied",
+                ...metadata,
+                reason: "原任务/版本不匹配。",
+              };
+            if (old.state === "done")
+              return {
+                status: "ok",
+                ...metadata,
+                id,
+                reused: true,
+                ...taskMode(old),
+                construction: "from-start",
+                openingInitialized: true,
+                summary: old.summary,
+                durationMs: old.durationMs,
+              };
+            if (old.state === "failed")
+              return {
+                status: "unsupported-or-failed",
+                ...metadata,
+                id,
+                reused: true,
+                ...taskMode(old),
+                ...old.failure,
+              };
+            return {
+              status: "unknown",
+              ...metadata,
+              id,
+              reason: "该开局测试此前已开始，结果不明时不重算。",
+            };
+          }
+          const name = (id) => names.get(id) || id;
+          const proposal = {
+            schemaVersion: 1,
+            id,
+            queryDigest,
+            binding,
+            opening,
+            construction: "from-start",
+            request,
+            hypothetical: true,
+            focus: query.focus,
+            question: query.question,
+            assumptions: query.assumptions,
+            version: proof.version,
+            binarySha256: proof.binarySha256,
+            contentSha256: proof.contentSha256,
+            preview: `从开局机制测试 ${id}\n版本 ${proof.version}；${
+              opening.mode
+            }；种子${request.firstSeed}起${request.seeds}个；算至第${
+              opening.throughTurn
+            }回合结束。\n双方牌组：${opening.decks
+              .map((d, i) => i + ": " + d.map(name).join("、"))
+              .join("；")}\n地点：${opening.locations
+              .map(name)
+              .join("、")}\n动作：${JSON.stringify(
+              opening.actions
+            )}\n以上是助手构造的牌组与条件，不是用户实战。`,
+            state: "prepared",
+            createdAt: now(),
+          };
+          save(id, proposal);
+          return executeOpening(proposal, metadata, content);
         }
         if (query.kind === "engine_test") {
           if (config.autoMechanismTests !== true)
@@ -1082,6 +1297,8 @@ export function createEngineService({
             ...taskMode(saved),
             failure: saved.failure ?? null,
             position: saved.position,
+            opening: saved.opening,
+            construction: saved.construction ?? "detached-position",
             request: saved.request,
             summary: saved.summary ?? null,
             note: "只读取已保留的推演任务，不新增计算；改变条件需用baseId与changes准备新任务并重新确认。",
@@ -1104,6 +1321,13 @@ export function createEngineService({
                 ...metadata,
                 reason:
                   "原局面不属于本提问者/群/账号或引擎已变更，请重新整理完整局面。",
+              };
+            if (base.opening)
+              return {
+                status: "denied",
+                ...metadata,
+                reason:
+                  "原任务从开局构造，请读回opening后重新engine_opening_test，不能当断面position继承。",
               };
             keys(query.changes, [
               "mode",

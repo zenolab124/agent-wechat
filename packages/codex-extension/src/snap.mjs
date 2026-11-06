@@ -65,7 +65,7 @@ export function validateLookups(value) {
     throw Error("Invalid SNAP lookup batch");
   if (
     value.filter((item) =>
-      ["engine_prepare", "engine_confirm", "engine_test"].includes(item?.kind)
+      ["engine_prepare", "engine_confirm", "engine_test", "engine_opening_test"].includes(item?.kind)
     ).length > 1
   )
     throw Error("One simulation operation per reply");
