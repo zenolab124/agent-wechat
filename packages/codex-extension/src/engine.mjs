@@ -1,3 +1,4 @@
+import { queryEngineReference } from "./engine-reference.mjs";
 import {
   validateOpeningLookup,
   normalizeOpening,
@@ -60,6 +61,8 @@ export function validateEngineConfig(config) {
     "timeoutMs",
     "maxSeeds",
     "autoMechanismTests",
+    "referenceFile",
+    "referenceSha256",
   ]);
   if (
     ["binary", "content", "verification"].some(
@@ -69,7 +72,12 @@ export function validateEngineConfig(config) {
       !integer(config.timeoutMs, 100, 120000)) ||
     (config.maxSeeds !== undefined && !integer(config.maxSeeds, 1, 10000)) ||
     (config.autoMechanismTests !== undefined &&
-      typeof config.autoMechanismTests !== "boolean")
+      typeof config.autoMechanismTests !== "boolean") ||
+    ((config.referenceFile !== undefined ||
+      config.referenceSha256 !== undefined) &&
+      (typeof config.referenceFile !== "string" ||
+        !isAbsolute(config.referenceFile) ||
+        !SHA.test(config.referenceSha256)))
   )
     throw Error("Invalid local engine configuration");
 }
@@ -78,7 +86,47 @@ export function validateEngineLookup(query) {
     validateOpeningLookup(query);
     return;
   }
+  if (query?.kind === "engine_compare") {
+    keys(query, [
+      "kind",
+      "region",
+      "question",
+      "assumptions",
+      "focus",
+      "cases",
+      "sender",
+    ]);
+    if (
+      !Array.isArray(query.cases) ||
+      query.cases.length < 2 ||
+      query.cases.length > 4 ||
+      new Set(query.cases.map((c) => c.label)).size !== query.cases.length
+    )
+      throw Error("Comparison requires distinct labeled cases");
+    for (const c of query.cases) {
+      keys(c, ["label", "opening", "firstSeed", "seeds"]);
+      if (
+        typeof c.label !== "string" ||
+        !c.label.trim() ||
+        c.label.length > 120
+      )
+        throw Error("Invalid comparison label");
+      validateOpeningLookup({
+        kind: "engine_opening_test",
+        region: query.region,
+        question: query.question,
+        assumptions: query.assumptions,
+        focus: query.focus,
+        opening: c.opening,
+        firstSeed: c.firstSeed,
+        seeds: c.seeds,
+        sender: query.sender,
+      });
+    }
+    return;
+  }
   const allowed = {
+    engine_explain: ["kind", "region", "cards"],
     engine_status: ["kind", "region"],
     engine_catalog: ["kind", "region", "query"],
     engine_prepare: [
@@ -117,6 +165,15 @@ export function validateEngineLookup(query) {
       query.query.length > 100)
   )
     throw Error("Invalid engine catalog query");
+  if (
+    query.kind === "engine_explain" &&
+    (!Array.isArray(query.cards) ||
+      !query.cards.length ||
+      query.cards.length > 4 ||
+      new Set(query.cards).size !== query.cards.length ||
+      query.cards.some((c) => typeof c !== "string" || !ID.test(c)))
+  )
+    throw Error("Invalid engine reference cards");
   if (query.kind === "engine_test") {
     if (
       !plain(query.position) ||
@@ -918,10 +975,134 @@ export function createEngineService({
             parityCases: proof.parity.equal,
             verifiedAt: proof.verifiedAt ?? null,
           };
+        if (query.kind === "engine_explain") {
+          if (!config.referenceFile)
+            return {
+              status: "unavailable",
+              ...metadata,
+              reason: "本机尚未安装实现依据包。",
+            };
+          const referenceBytes = bytes(config.referenceFile, 4 * 1024 * 1024);
+          if (digest(referenceBytes) !== config.referenceSha256)
+            throw Error("Reference integrity mismatch");
+          const reference = JSON.parse(referenceBytes);
+          if (
+            reference.schema !== "snap-engine-reference/v1" ||
+            reference.region !== "cn" ||
+            reference.version !== proof.version ||
+            reference.contentSha256 !== proof.contentSha256 ||
+            reference.binarySha256 !== proof.binarySha256
+          )
+            throw Error("Reference identity mismatch");
+          return {
+            ...metadata,
+            ...queryEngineReference(reference, query.cards),
+          };
+        }
+        if (query.kind === "engine_compare") {
+          if (config.autoMechanismTests !== true)
+            return {
+              status: "denied",
+              ...metadata,
+              reason: "维护者尚未启用自动机制测试。",
+            };
+          owner(scope, query.sender);
+          const started = now(),
+            cases = [];
+          for (const c of query.cases) {
+            signal?.throwIfAborted();
+            const result = await service.lookup(
+              {
+                kind: "engine_opening_test",
+                region: query.region,
+                question:
+                  query.question.slice(0, 397 - c.label.length) +
+                  " / " +
+                  c.label,
+                assumptions: query.assumptions,
+                focus: query.focus,
+                opening: c.opening,
+                seeds: c.seeds,
+                firstSeed: c.firstSeed,
+                sender: query.sender,
+              },
+              { scope, cards, locations }
+            );
+            const summary = result.summary,
+              first = summary?.firstRun;
+            cases.push({
+              label: c.label,
+              id: result.id,
+              status: result.status,
+              failureCode: result.failureCode,
+              reason: result.reason,
+              detail: result.detail,
+              summary: first
+                ? {
+                    openingInitialized: summary.openingInitialized,
+                    traceAvailable: summary.traceAvailable,
+                    seeds: summary.seeds,
+                    firstSeed: summary.firstSeed,
+                    initial: first.initial,
+                    final: first.final,
+                    actions: first.actions,
+                    focusSeen: first.focusSeen,
+                    outcomes: summary.outcomes,
+                  }
+                : null,
+            });
+          }
+          if (Buffer.byteLength(JSON.stringify(cases)) > 48000)
+            return {
+              status: "comparison-too-large",
+              ...metadata,
+              hypothetical: true,
+              durationMs: now() - started,
+              cases: cases.map(
+                ({ label, id, status, failureCode, reason }) => ({
+                  label,
+                  id,
+                  status,
+                  failureCode,
+                  reason,
+                })
+              ),
+              reason:
+                "各组已保留；摘要较大，需按组id用engine_read继续查看，不重算。",
+            };
+          return {
+            status: cases.every((c) => c.status === "ok")
+              ? "ok"
+              : "incomplete-comparison",
+            ...metadata,
+            hypothetical: true,
+            durationMs: now() - started,
+            cases,
+            note: "同条件对照的完整场景和报告保留在各子任务；失败组不能当成功结果，单种子不当胜率。私有状态未直接输出时仍需结合实现依据，不捏造内部轨迹。群内只解释游戏层面的结论和必要条件。",
+          };
+        }
         if (query.kind === "engine_status")
           return {
             status: "ok",
             ...metadata,
+            implementationReference: {
+              available: !!config.referenceFile,
+              kind: "engine_explain",
+              fields: { cards: "1至4个本服卡牌ID" },
+              note: "本地Rust实现及单卡验证摘要，仅供内部依据，不是客户端组合验证",
+            },
+            mechanismComparison: {
+              enabled: config.autoMechanismTests === true,
+              kind: "engine_compare",
+              fields: {
+                question: "本轮问题",
+                assumptions: "所有明确的合成假设",
+                focus: "卡牌ID列表",
+                cases:
+                  "2至4组{label,opening,firstSeed?,seeds?}，opening格式见openingTests",
+              },
+              note: "改变一个条件构造对照，各组仍使用原开局入口和身份/版本/失败校验。连续追问可读回各组id。",
+            },
             capabilities: [
               "detached-position-confirmation",
               "specified-actions-simulation",

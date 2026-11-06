@@ -468,7 +468,8 @@ The request includes `question`, explicit `assumptions`, a complete `position`,
 and `focus` entity IDs for the trigger sources under examination. Missing real
 match details are not silently filled into a synthetic scene and presented as
 facts. The model can construct a new hypothesis instead of asking for a full
-board, but must report its conditions and the scope of the result.
+board, but must keep its conditions and result scope in the internal record and mention
+only conditions that matter to the player's conclusion.
 
 The response keeps the actual engine rejection as a classified reason and safe
 detail, or returns a conditional simulation with trigger coverage. A simulation
@@ -479,6 +480,37 @@ separately. A history-analysis `unresolved` flag alone is not a capability test.
 Identical tests from the same input reuse their stored result, including a
 failure; other senders/groups cannot read the task. The normal `engine_prepare`
 and `engine_confirm` flow continues to serve actual-match reconstruction.
+
+Mechanism answers use short player-facing explanations: the result, the game
+reason and only a necessary condition. Source excerpts, versions, seeds, entity
+IDs, evidence tiers and test reports support the answer internally instead of
+appearing in routine group replies. Diagnostic drafts are returned to the same
+model conversation for rewriting before delivery. This does not turn an engine
+prediction into an official design statement or a fresh client experiment.
+
+`engine_explain` takes `region: "cn"` and `cards: ["CardID", ...]` (one to four).
+It reads an optional operator-installed implementation reference and individual
+card verification summaries. Export only this project's Rust game sources, never
+client artifacts, with:
+
+```sh
+node packages/codex-extension/scripts/export-engine-reference.mjs /local/snap-source /private/content.json /private/snap-rules-cli /private/reference.json
+```
+
+Configure absolute `engine.referenceFile` and the returned `engine.referenceSha256`.
+The bundle is checked against its file hash, content version/hash and target
+binary hash. It remains source-reference evidence: it does not prove that every
+source file matches the compiled program or that individual-card verification
+covers a combination. Keep the bundle and diagnostic excerpts private.
+
+`engine_compare` takes `question`, synthetic `assumptions`, card-ID `focus` and
+2–4 labeled `cases` (`{label, opening, firstSeed?, seeds?}`). Each case runs through
+the existing opening-test gate and retains its own scoped journal/report. An
+incomplete comparison cannot become a complete conclusion; follow-ups can use
+`engine_read` on each case ID. Keep common conditions fixed and change the
+condition being tested. Neither reference lookup nor these comparisons expose
+the client comparison host. Detailed private-state event logs have not been
+added to the installed Rust binary by this extension.
 
 For start-of-game, loading, initial-deck markers or opening-hand mechanics, use
 `engine_opening_test` (same operator setting), not a detached position with

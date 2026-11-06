@@ -1,3 +1,4 @@
+import { needsPlayerRewrite } from './mechanism-presentation.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -157,7 +158,7 @@ export class CodexClient {
       const permittedCodes = new Set();
       const allowCodes=results=>{for(const result of results)if(result.status==='ok'&&result.offline)for(const code of [result.code,result.decoded?.code,...(Array.isArray(result.decks)?result.decks:[]).map(d=>d.code),...(Array.isArray(result.matches)?result.matches:[]).map(d=>d.code)])if(typeof code==='string')permittedCodes.add(code);};
       allowCodes(prefetched);
-      let enginePreview, protocolCorrections=0; const engineOperations=[];
+      let enginePreview, protocolCorrections=0, presentationRepairs=0; const engineOperations=[];
       while (Date.now() < deadline) {
         const final = new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
@@ -182,13 +183,18 @@ export class CodexClient {
           continue;
         }
         if (!decision.lookup) {
+          if(decision.reply && (engineOperations.length || prefetched.some(r=>r.query?.kind?.startsWith('engine_'))) && needsPlayerRewrite(decision.text,{allowTestingSummary:(context.messages??[]).some(m=>/怎么测|如何测|测试过程|验证过程|怎么验证|怎样验证/.test(m.text??""))})){
+            if(++presentationRepairs>2)return {reply:true,text:'这个联动我还需要再核对，先不误导大家。',engineOperations,usage:completeUsage?tokenUsage(combined):null,modelRequests:requests};
+            inputContext={playerSummaryRewrite:{draft:decision.text,instruction:'这份草稿含内部诊断信息，尚未发送。只保留有依据的游戏结论，用中文牌名、游戏时点和目标解释，通常两三句，一个短段落；不要复述测试经过。技术字段/源码/版本/种子/证据档位全部留在内部。不要增加新事实，不宣称官方设计意图；证据只有引擎时简短说按当前验证。'},mode:context.mode,...(context.replyRequired?{replyRequired:true}:{})};
+            continue;
+          }
           const codes = decision.reply ? issuedDeckCodes(decision.text) : [];
           if (codes.some(code => !permittedCodes.has(code))) return {reply:true,text:'这次生成的卡组码未通过本地校验。请明确指定本地卡组；若要把图片转成卡组码，请发图或引用原图并说明转换请求。',usage:completeUsage?tokenUsage(combined):null,modelRequests:requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query)};
           return { ...decision, ...(engineOperations.length?{engineOperations}:{}), ...(codes.length ? {verifiedDeckCode:true} : {}), usage: completeUsage ? tokenUsage(combined) : null, modelRequests: requests,preloadMs,preloadedQueries:prefetched.map(r=>r.query) };
         }
         const results = await this.snapLookup.lookup(decision.lookup, {imageDeckAllowed:context.deckImageRequest?.authorized===true,imageDeckIndex:context.deckImageRequest?.imageIndex,scope:options.scope});
         for(const result of results) if(result.query?.kind?.startsWith('engine_')) {
-          engineOperations.push({kind:result.query.kind,status:result.status,id:result.id??null,version:result.version??null,durationMs:result.durationMs??null,reused:result.reused===true,hypothetical:result.hypothetical===true,failureCode:result.failureCode??null});
+          engineOperations.push({kind:result.query.kind,status:result.status,id:result.id??null,version:result.version??null,durationMs:result.durationMs??null,reused:result.reused===true,hypothetical:result.hypothetical===true,failureCode:result.failureCode??null,...(result.cases?{caseIds:result.cases.map(c=>({label:c.label,id:c.id??null,status:c.status}))}:{})});
           if(result.status==='awaiting-confirmation'&&typeof result.replyText==='string') enginePreview=result.replyText;
         }
         const imageDeckResult=results.find(r=>r.query?.kind==='encode_image_deck'&&r.status==='ok'&&r.offline&&typeof r.replyText==='string'&&typeof r.code==='string');

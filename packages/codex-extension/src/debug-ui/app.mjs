@@ -34,7 +34,7 @@ const time = (value) => {
     : "";
 };
 const lookupLabel = (query) => {
-  if (query?.kind?.startsWith("engine_")) return ({engine_opening_test:"从开局机制测试",engine_test:"自动机制测试",engine_status:"引擎能力与格式",engine_read:"读取推演："+(query.id??""),engine_catalog:"引擎目录："+(query.query??""),engine_prepare:"准备局面核对",engine_confirm:"确认推演："+(query.id??"")})[query.kind]??query.kind;
+  if (query?.kind?.startsWith("engine_")) return ({engine_explain:"本地实现依据（内部）",engine_compare:"机制对照测试",engine_opening_test:"从开局机制测试",engine_test:"自动机制测试",engine_status:"引擎能力与格式",engine_read:"读取推演："+(query.id??""),engine_catalog:"引擎目录："+(query.query??""),engine_prepare:"准备局面核对",engine_confirm:"确认推演："+(query.id??"")})[query.kind]??query.kind;
   if (query?.kind === "recent_cards") return "按上线日期查询近期卡牌";
   if (query?.kind === "location") return `地点：${query.query ?? ""}`;
   if (query?.kind === "location_schedule")

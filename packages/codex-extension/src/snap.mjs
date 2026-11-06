@@ -71,6 +71,7 @@ export function validateLookups(value) {
         "engine_confirm",
         "engine_test",
         "engine_opening_test",
+        "engine_compare",
       ].includes(item?.kind)
     ).length > 1
   )
@@ -519,6 +520,7 @@ export function createSnapLookup({
           defaultRegion: snap.defaultRegion,
           engineEnabled: !!engine,
           engineAutoTests: engine?.autoMechanismTests === true,
+          engineReferenceEnabled: !!engine?.referenceFile,
         });
         return plan.length
           ? compactPrefetch(await api.lookup(plan), messages)

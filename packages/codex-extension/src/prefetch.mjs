@@ -60,6 +60,7 @@ export function prefetchPlan({
   defaultRegion,
   engineEnabled,
   engineAutoTests,
+  engineReferenceEnabled,
 }) {
   const text = messages.map((m) => m.text ?? "").join("\n");
   if (
@@ -91,6 +92,12 @@ export function prefetchPlan({
     (found.length || places.length)
   ) {
     q.push({ kind: "engine_status", region });
+    if (engineReferenceEnabled && found.length)
+      q.push({
+        kind: "engine_explain",
+        region,
+        cards: found.map((c) => c.key),
+      });
     q.push({
       kind: "rules",
       region,
@@ -131,6 +138,8 @@ export function compactPrefetch(results, messages) {
         inputLimitations,
         inputFormat,
         openingTests,
+        implementationReference,
+        mechanismComparison,
       } = r;
       r = {
         query,
@@ -140,6 +149,8 @@ export function compactPrefetch(results, messages) {
         evidenceTier,
         macEngineVerified,
         inputLimitations,
+        implementationReference,
+        mechanismComparison,
         ...(opening ? { openingTests } : { mechanismTests, inputFormat }),
         prefetchedFormat: opening ? "from-start" : "detached-position",
       };

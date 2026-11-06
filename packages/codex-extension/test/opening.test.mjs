@@ -321,3 +321,90 @@ test("opening service enforces operator gate and trusted scope, reuses results, 
   assert.equal((await disabled.lookup(q, { scope })).status, "denied");
   assert.equal(h.calls.length, executions);
 });
+
+test("comparison runs scoped synthetic cases, reuses their journals, preserves failure distinctions and never bypasses the operator gate", async (t) => {
+  const h = harness(t),
+    hash = (x) => createHash("sha256").update(x).digest("hex");
+  const binary = join(h.directory, "bin"),
+    data = join(h.directory, "data.json"),
+    verification = join(h.directory, "proof.json");
+  writeFileSync(binary, "fixture");
+  writeFileSync(data, JSON.stringify({ ...content, region: "cn" }));
+  writeFileSync(
+    verification,
+    JSON.stringify({
+      schemaVersion: 1,
+      platform: "darwin-arm64",
+      version: "cn-48.18-dv0",
+      binarySha256: hash("fixture"),
+      contentSha256: hash(readFileSync(data)),
+      parity: { expected: 687, equal: 687, unequal: 0 },
+      rustWorkspaceTestsPassed: true,
+    })
+  );
+  const config = {
+      binary,
+      content: data,
+      verification,
+      autoMechanismTests: true,
+    },
+    service = createEngineService({
+      config,
+      directory: h.directory,
+      run: h.run,
+    }),
+    scope = {
+      accountId: "account",
+      groupId: "group",
+      messages: [{ id: "inbound", sender: "one", text: "对照验证" }],
+    },
+    base = query();
+  const q = {
+    kind: "engine_compare",
+    region: "cn",
+    question: "只改变是否打出这张卡",
+    assumptions: ["合成开局，其他条件相同"],
+    focus: base.focus,
+    cases: [
+      { label: "打出", opening: base.opening },
+      { label: "不打出", opening: { ...base.opening, actions: [] } },
+    ],
+  };
+  const first = await service.lookup(q, { scope });
+  assert.equal(first.status, "ok", JSON.stringify(first));
+  assert.notEqual(first.cases[0].id, first.cases[1].id);
+  assert.equal(first.cases[0].summary.traceAvailable, false);
+  assert.notDeepEqual(
+    first.cases[0].summary.final.players[0].hand,
+    first.cases[1].summary.final.players[0].hand
+  );
+  const n = h.calls.length;
+  assert.equal((await service.lookup(q, { scope })).status, "ok");
+  assert.equal(h.calls.length, n);
+  const denied = await service.lookup(
+    { kind: "engine_read", region: "cn", id: first.cases[0].id },
+    { scope: { ...scope, groupId: "other" } }
+  );
+  assert.equal(denied.status, "denied");
+  assert.equal(
+    (
+      await createEngineService({
+        config: { ...config, autoMechanismTests: false },
+        directory: h.directory,
+        run: h.run,
+      }).lookup(q, { scope })
+    ).status,
+    "denied"
+  );
+  assert.equal(h.calls.length, n);
+  const failed = structuredClone(q);
+  failed.cases[1].label = "牌未抽到";
+  failed.cases[1].opening.actions = [
+    { kind: "play", player: 0, turn: 1, card: "Card1", lane: 0 },
+  ];
+  const partial = await service.lookup(failed, { scope });
+  assert.equal(partial.status, "incomplete-comparison");
+  assert.equal(partial.cases[1].failureCode, "opening-action-unavailable");
+  assert.match(partial.cases[1].detail, /Card1/);
+  assert.throws(() => validateLookups([q, base]), /One simulation/);
+});
