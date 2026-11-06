@@ -1,3 +1,4 @@
+import { selectReplyTarget, chooseReplyStyle } from './reply-style.mjs';
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { groupUsage, recordResult } from './usage.mjs';
@@ -243,7 +244,7 @@ export class Bridge {
       const suppliedMessages = selectedImage && !messages.some(message => message.id === selectedImage.id) ? [...messages,selectedImage] : messages;
       for (const message of suppliedMessages) {
         const content = describeMessage(message);
-        const input = { sender: message.senderId, text: content.text, at: message.createdAt,
+        const input = { messageIndex: modelMessages.length + 1, sender: message.senderId, text: content.text, at: message.createdAt,
           ...(content.kind !== 'text' ? { kind: content.kind } : {}), ...(quotedInput(message) ? { quote: quotedInput(message) } : {}) };
         if (isVisualMessage(message) && group.receiveImagesAndStickers === true) {
           const visual = await prepareVisual({ client: this.client, config: this.config, message, signal: this.signal,
@@ -301,6 +302,9 @@ export class Bridge {
         task.replyFallback = true;
       }
       if (!decision.reply) { usage.silentCalls++; this.ignore(task); await this.refreshContext(task.threadId); return; }
+      const replyTarget = selectReplyTarget(suppliedMessages, decision.replyTo, conversionRequest);
+      if (replyTarget) task.replyTarget = {messageId:replyTarget.id,serverId:replyTarget.serverId??null,senderId:replyTarget.senderId,fingerprint:messageFingerprint(replyTarget)};
+      task.quoteRequested = decision.quoteReply === true;
       task.reply = decision.text.trim(); task.state = 'prepared'; this.store.save();
     }
     // Also cover a prepared sticker reply left by an earlier worker version.
@@ -310,8 +314,17 @@ export class Bridge {
     const recheck = await this.inputs(task);
     this.signal?.throwIfAborted();
     if (!recheck) { this.ignore(task); return; }
+    const target = task.replyTarget
+      ? await this.client.message(this.config.accountId,task.replyTarget.messageId)
+      : selectReplyTarget(recheck);
+    if (!target || target.accountId !== this.config.accountId || target.threadId !== task.threadId || target.recall
+      || task.replyTarget && (target.id !== task.replyTarget.messageId || (target.serverId??null) !== task.replyTarget.serverId || target.senderId !== task.replyTarget.senderId || messageFingerprint(target) !== task.replyTarget.fingerprint)) { this.ignore(task); return; }
+    const recent = await this.client.messages(this.config.accountId,task.threadId,{limit:40});
+    task.replyStyle = chooseReplyStyle({target,inputs:recheck,recent:recent.items,now:this.now(),quoteRequested:task.quoteRequested,imageRequest:!!conversionRequest});
+    // Freeze the reference before the one send POST. Unknown outcomes retain
+    // this same key/reference and are only reconciled, never resent as plain text.
     task.state = 'submitting'; task.sendStartedAt ??= this.now(); this.store.save();
-    try { await this.settle(task, await this.client.sendText(this.config.accountId, task.threadId, task.reply, task.key)); }
+    try { await this.settle(task, await this.client.sendText(this.config.accountId, task.threadId, task.reply, task.key, task.replyStyle.quote ? {quote:task.replyStyle.quote} : undefined)); }
     catch { task.state = 'unknown'; this.store.save(); this.report({ event: 'reply.unknown' }); }
     // Derive the optional view after saving generation and send state. A viewer
     // failure must not delay sending or grant another model call.

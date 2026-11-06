@@ -118,7 +118,7 @@ export class CodexClient {
             return;
           }
           if (typeof decision.reply !== 'boolean') throw Error();
-          turn.resolve({ reply: decision.reply, ...(decision.reply ? { text: decision.text } : {}), usage: turn.usage ?? null });
+          turn.resolve({ reply: decision.reply, ...(decision.reply ? { text: decision.text, ...(Number.isSafeInteger(decision.replyTo)&&decision.replyTo>0?{replyTo:decision.replyTo}:{}), ...(decision.quoteReply===true?{quoteReply:true}:{}) } : {}), usage: turn.usage ?? null });
         } catch { turn.reject(Object.assign(Error('Codex final answer is not a reply decision'), { usage: turn.usage ?? null })); }
       }
     }

@@ -420,3 +420,19 @@ test('multiple own image candidates ask for a specific source and never enable c
  f.codex.answer=async(context)=>{f.generations.push(context);return{reply:true,text:'请引用你要转换的那张图片'}};
  await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.generations[0].deckImageRequest.authorized,false);assert.equal(f.generations[0].deckImageRequest.sourceStatus,'ambiguous');assert.equal(f.generations[0].deckImageRequest.sourceMessageId,null);assert.equal(f.calls.length,1);
 });
+
+test('reply placement quotes the actual question when another member talks during generation, but direct replies remain plain',async t=>{
+ for(const interrupted of [false,true]){
+  const f=fixture(t,{callIntervalMs:0,cooldownMs:0});f.message.serverId='123456789012345678';
+  const unrelated={...f.message,id:'interleaved',serverId:'987654321',senderId:'outsider',body:'another topic',createdAt:new Date(Date.parse(f.message.createdAt)+1).toISOString()};let answered=false;
+  f.codex.answer=async(context)=>{assert.equal(context.messages[0].messageIndex,1);assert.ok(!JSON.stringify(context).includes('another topic'));answered=true;return{reply:true,text:'只答原问题'}};
+  f.client.messages=async(_a,_t,opts)=>({items:answered&&interrupted&&opts.limit===40?[unrelated,f.message]:[f.message]});
+  await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.calls.length,1);const task=Object.values(f.store.data.tasks)[0];assert.equal(task.replyStyle.mode,interrupted?'quote':'plain');assert.deepEqual(f.calls[0][4],interrupted?{quote:{messageId:f.message.id,serverId:f.message.serverId}}:undefined);
+ }
+});
+
+test('a quoted send with an uncertain POST response is reconciled by the original key and never retried as plain text',async t=>{
+ const f=fixture(t,{callIntervalMs:0,cooldownMs:0});f.message.serverId='12345';f.codex.answer=async()=>({reply:true,text:'引用测试',quoteReply:true});let posts=0;f.client.sendText=async(...args)=>{posts++;assert.deepEqual(args[4],{quote:{messageId:f.message.id,serverId:'12345'}});throw Error('lost response')};
+ await f.bridge.accept(f.event());await f.bridge.drain();const task=Object.values(f.store.data.tasks)[0];assert.equal(task.state,'unknown');assert.equal(task.replyStyle.mode,'quote');assert.equal(posts,1);
+ f.client.sendByKey=async(_a,key)=>{assert.equal(key,task.key);return f.receipt};await f.bridge.drain();assert.equal(task.state,'done');assert.equal(posts,1);
+});

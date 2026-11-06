@@ -237,8 +237,19 @@ all model usage. A silent model decision gets a short clarification reply. Missi
 recalled or unverifiable originals cannot open this route. Other authors' quotes
 still follow the configured sender and normal reply policy. Bound text inputs and
 same-group send recovery still apply; network/model failures remain failures.
-This adds received-quote handling; the assistant's outgoing replies remain plain
-text and do not claim live validation of native quoted sends.
+Outgoing replies now choose ordinary text or a native quote. Direct exchanges
+stay plain. Image answers, quoted questions, multi-person batches, delayed
+answers and intervening group traffic can quote the actual question so readers
+can see what the assistant answered. The model may select a numbered message
+from the supplied batch or request a topic reference; it cannot supply arbitrary
+native message IDs. Before sending, the worker checks recent group traffic and
+revalidates the selected account/chat/server identity and unchanged source.
+Unadmitted traffic affects layout only and is not fed into inference. Missing
+or unsupported native references use ordinary text. The selected quote is saved
+before the one send POST; an uncertain response is reconciled by the original
+key without a second plain-text send. The debug task list shows the chosen form
+and reason. Native quote acceptance and recipient rendering on this Mac still
+require live observation; synthetic tests do not establish that presentation.
 
 Per-group usage records admitted/merged messages, calls, silent/failed/unknown calls,
 rate-limited batches and accepted replies. Token counts come from Codex's

@@ -51,8 +51,8 @@ function harness(t, options = {}) {
     get bridge() { return bridge; }, get data() { return store.data; }, get now() { return now; }, advance(ms) { now += ms; },
     restart() { store.close(); store = new StateStore(directory, binding); bridge = create(); },
     save() { store.save(); },
-    async add(id, { group = 'a@chatroom', sender = 'one', text = id, createdAt = new Date(now).toISOString() } = {}) {
-      rows.set(id, { id, accountId: 'account', threadId: group, senderId: sender, type: 1, direction: 'incoming', body: text, version: 'profile-1', createdAt });
+    async add(id, { group = 'a@chatroom', sender = 'one', text = id, serverId, createdAt = new Date(now).toISOString() } = {}) {
+      rows.set(id, { id, accountId: 'account', threadId: group, senderId: sender, type: 1, direction: 'incoming', body: text, version: 'profile-1', createdAt, ...(serverId ? {serverId} : {}) });
       await bridge.accept({ cursor: String(++cursor), kind: 'message.committed', data: { messageId: id, threadId: group, origin: 'live' } });
     },
   };
@@ -189,7 +189,7 @@ test('local usage command reads a live locked journal without a daemon token or 
 test('persistent group bindings survive restart and never share or replay native history', async t => {
   const f = harness(t, { persistentConversations: true, codexHome: '/isolated/profile' });
   f.codex.profile = '/isolated/profile'; const options = [];
-  f.client.messages = async () => { throw Error('Persistent turns must not replay native history'); };
+  f.client.messages = async (_account,_group,opts) => { assert.equal(opts.limit,40); return {items:[]}; }; // Traffic placement only; history must remain empty below.
   f.codex.answer = async (context, opts) => {
     options.push(structuredClone({ conversation: opts.conversation, persist: opts.persist }));
     const id = opts.conversation?.threadId ?? `codex-thread-${options.length}`;
@@ -234,4 +234,10 @@ test('operational timing separates merge wait, model call and accepted send with
   assert.equal(task.modelStartedAt - received, 3000); assert.equal(task.modelCompletedAt - task.modelStartedAt, 5000);
   assert.equal(task.acceptedAt - task.sendStartedAt, 200); assert.equal(task.acceptedAt - received, 8200);
   f.restart(); assert.equal(Object.values(f.data.tasks)[0].acceptedAt, task.acceptedAt);
+});
+
+test('multi-person batch quotes the selected question and ignores model attempts to target outside the current batch',async t=>{
+ for(const replyTo of [1,999]){
+ const f=harness(t,{callIntervalMs:0,cooldownMs:0});await f.add('first',{sender:'one',serverId:'101'});await f.add('second',{sender:'two',serverId:'202'});f.codex.answer=async()=>({reply:true,text:'明确答复',replyTo});f.advance(3000);await f.bridge.drain();const task=Object.values(f.data.tasks)[0];assert.equal(task.state,'done');assert.deepEqual(task.replyStyle.quote,replyTo===1?{messageId:'first',serverId:'101'}:{messageId:'second',serverId:'202'});assert.equal(task.replyStyle.reason,'multiple-senders');assert.equal(f.sends.length,1);
+ }
 });
