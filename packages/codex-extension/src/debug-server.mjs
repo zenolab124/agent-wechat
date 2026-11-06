@@ -224,6 +224,7 @@ export async function startDebugServer({ config, codex, localDataStatus, port = 
             verifiedDeckCode: task.verifiedDeckCode === true,
             engineOperations: task.engineOperations ?? [],
             replyStyle:task.replyStyle??null,
+            replyParts:(task.replyParts??[]).map((part,i)=>({index:i+1,state:part.state,receipt:part.receiptState??null,characters:part.characters})),
             visualTimings:task.visualTimings??[],
             preloadMs:task.preloadMs??null,
             preloadedQueries:task.preloadedQueries??[],

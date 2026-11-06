@@ -421,11 +421,12 @@ export function textDeckCode(request, cards, allowed) {
             )
             .join("；")
         : ""
-    }\n${finalCards
-      .map((c, i) => `${i + 1}. ${c.name ?? c.key}`)
-      .join(
-        "\n"
-      )}\n\n${code}\n\n复制上面的整行卡组码，在游戏收藏的卡组页面粘贴导入。`,
+    }${
+      decoded
+        ? ""
+        : "\n" +
+          finalCards.map((c, i) => `${i + 1}. ${c.name ?? c.key}`).join("\n")
+    }\n\n${code}`,
   };
 }
 export function parseDeckLibrary(body, count) {
@@ -540,9 +541,7 @@ export function imageDeckCode(request, cards, allowed) {
       request.region === "cn" ? "国服" : "国际服"
     } · 已核对12张卡：\n${resolved
       .map((card, i) => `${i + 1}. ${card.name ?? card.key}`)
-      .join(
-        "\n"
-      )}\n\n${code}\n\n复制上面的整行卡组码，在游戏收藏的卡组页面粘贴导入。`,
+      .join("\n")}\n\n${code}`,
   };
 }
 export function queryDecks(request, items, cards) {

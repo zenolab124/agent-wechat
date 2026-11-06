@@ -1,4 +1,5 @@
 import { ViewRefreshQueue } from './view-refresh.mjs';
+import { planReply, clearReply, validateReplyParts } from './reply-delivery.mjs';
 import { selectReplyTarget, chooseReplyStyle } from './reply-style.mjs';
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
@@ -145,8 +146,25 @@ export class Bridge {
       }
     } finally { this.draining = false; }
   }
-  async settle(task, intent) {
+  async settle(task, intent, part) {
     if (intent.accountId !== this.config.accountId || intent.destination !== task.threadId) throw Error('Send receipt account/destination mismatch');
+    if (part) {
+      if (task.replyParts.some(other => other !== part && other.sendId === intent.id)) throw Error('Send receipt reused across reply parts');
+      part.sendId = intent.id; part.receiptState = intent.state;
+      task.sendId = intent.id; task.receiptState = intent.state;
+      if (intent.state === 'accepted') {
+        part.state = 'done'; part.acceptedAt ??= this.now(); delete part.text;
+        if (task.replyParts.every(item => item.state === 'done')) {
+          task.state = 'done'; task.acceptedAt ??= this.now(); clearReply(task);
+          this.store.data.lastReply[task.threadId] = this.now();
+          if (!task.receiptCounted) { groupUsage(this.store.data,task.threadId).repliesAccepted++; task.receiptCounted=true; }
+        } else task.state = 'prepared';
+      } else if (['failed','cancelled','canceled','rejected'].includes(intent.state)) {
+        part.state = 'failed'; task.state = 'failed'; clearReply(task);
+      } else { part.state='submitted'; task.state='submitted'; }
+      try { this.store.save(); } catch(error) { error.deliveryPersistenceFailure=true; throw error; }
+      this.report({event:'reply.receipt',state:task.state,receiptState:intent.state,part:task.replyParts.indexOf(part)+1}); return;
+    }
     task.sendId = intent.id;
     task.receiptState = intent.state;
     // Preserve any unrecognized/uncertain state; never resubmit it.
@@ -175,7 +193,7 @@ export class Bridge {
     }
     return messages;
   }
-  ignore(task) { task.state = 'ignored'; delete task.reply; this.store.save(); }
+  ignore(task) { task.state = 'ignored'; clearReply(task); this.store.save(); }
   async refreshContext(threadId) {
     this.viewRefresh.schedule(threadId);
   }
@@ -183,9 +201,12 @@ export class Bridge {
     await this.identity();
     if (['submitting', 'submitted', 'unknown'].includes(task.state)) {
       // The POST may already have reached WeChat. A missing receipt is not permission to retry.
-      try { await this.settle(task, task.sendId ? await this.client.send(this.config.accountId, task.sendId) : await this.client.sendByKey(this.config.accountId, task.key)); }
-      catch { task.state = 'unknown'; this.store.save(); }
-      return;
+      validateReplyParts(task);
+      const part=task.replyParts?.find(p=>['submitting','submitted','unknown'].includes(p.state));
+      const delivery=part??task;
+      try { await this.settle(task, delivery.sendId ? await this.client.send(this.config.accountId, delivery.sendId) : await this.client.sendByKey(this.config.accountId, delivery.key),part); }
+      catch(error) { if(error.deliveryPersistenceFailure)throw error; task.state = 'unknown'; if(part)part.state='unknown'; this.store.save(); }
+      if(task.state!=='prepared')return;
     }
     if (Object.values(this.store.data.tasks).some(other => other !== task && other.threadId === task.threadId
       && ['submitting', 'submitted', 'unknown'].includes(other.state))) return;
@@ -324,12 +345,19 @@ export class Bridge {
     if (!target || target.accountId !== this.config.accountId || target.threadId !== task.threadId || target.recall
       || task.replyTarget && (target.id !== task.replyTarget.messageId || (target.serverId??null) !== task.replyTarget.serverId || target.senderId !== task.replyTarget.senderId || messageFingerprint(target) !== task.replyTarget.fingerprint)) { this.ignore(task); return; }
     const recent = await this.client.messages(this.config.accountId,task.threadId,{limit:40});
-    task.replyStyle = chooseReplyStyle({target,inputs:recheck,recent:recent.items,now:this.now(),quoteRequested:task.quoteRequested,imageRequest:!!conversionRequest});
+    task.replyStyle ??= chooseReplyStyle({target,inputs:recheck,recent:recent.items,now:this.now(),quoteRequested:task.quoteRequested,imageRequest:!!conversionRequest});
     // Freeze the reference before the one send POST. Unknown outcomes retain
     // this same key/reference and are only reconciled, never resent as plain text.
-    task.state = 'submitting'; task.sendStartedAt ??= this.now(); this.store.save();
-    try { await this.settle(task, await this.client.sendText(this.config.accountId, task.threadId, task.reply, task.key, task.replyStyle.quote ? {quote:task.replyStyle.quote} : undefined)); }
-    catch { task.state = 'unknown'; this.store.save(); this.report({ event: 'reply.unknown' }); }
+    task.replyParts ??= planReply(task); validateReplyParts(task); this.store.save();
+    for(const [index,part] of task.replyParts.entries()) {
+      if(part.state==='done')continue;
+      await this.identity(); if(!await this.inputs(task)){this.ignore(task);break;}
+      this.signal?.throwIfAborted();
+      part.state='submitting';task.state='submitting';task.sendId=part.sendId??null;task.receiptState=part.receiptState??null;part.sendStartedAt??=this.now();task.sendStartedAt??=part.sendStartedAt;this.store.save();
+      try { await this.settle(task,await this.client.sendText(this.config.accountId,task.threadId,part.text,part.key,index===0&&task.replyStyle.quote?{quote:task.replyStyle.quote}:undefined),part); }
+      catch(error) { if(error.deliveryPersistenceFailure)throw error; part.state='unknown';task.state='unknown';this.store.save();this.report({event:'reply.unknown',part:index+1}); }
+      if(task.state!=='prepared')break;
+    }
     // Derive the optional view after saving generation and send state. A viewer
     // failure must not delay sending or grant another model call.
     if (generated) await this.refreshContext(task.threadId);

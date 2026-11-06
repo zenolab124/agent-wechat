@@ -8,6 +8,7 @@ import { StateStore } from '../src/state.mjs';
 import { CodexClient, workerArgs } from '../src/codex.mjs';
 import { verifyAssistantQuote } from '../src/quotes.mjs';
 import { createHash } from 'node:crypto';
+import { splitReply, planReply } from '../src/reply-delivery.mjs';
 
 function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'wx-codex-test-'));
@@ -33,6 +34,64 @@ function fixture(t, overrides = {}) {
   const event = (cursor = '1', origin = 'live') => ({ cursor, kind: 'message.committed', data: { messageId: message.id, threadId: message.threadId, origin } });
   return { bridge, client, codex, store, message, calls, generations, event, config, receipt, directory, binding };
 }
+
+const longReply='第一点：'+'甲'.repeat(180)+'。\n\n第二点：'+'乙'.repeat(180)+'。\n\n第三点：'+'丙'.repeat(180)+'。';
+test('long answers send ordered independent parts with one generation, quote only the first, and count one reply',async t=>{
+ const f=fixture(t);f.message.serverId='12345';
+ f.codex.answer=async context=>{f.generations.push(context);return{reply:true,text:longReply,quoteReply:true}};
+ f.client.sendText=async(...args)=>{f.calls.push(args);const task=Object.values(f.store.data.tasks)[0];assert.equal(task.replyParts[f.calls.length-1].state,'submitting');return{...f.receipt,id:'send-'+f.calls.length}};
+ await f.bridge.accept(f.event());await f.bridge.drain();await f.bridge.drain();
+ assert.deepEqual(f.calls.map(c=>c[2]),splitReply(longReply));assert.equal(f.calls.length,3);assert.equal(new Set(f.calls.map(c=>c[3])).size,3);
+ assert.deepEqual(f.calls[0][4],{quote:{messageId:f.message.id,serverId:'12345'}});assert.ok(f.calls.slice(1).every(c=>c[4]===undefined));
+ assert.equal(f.generations.length,1);assert.equal(f.store.data.usage.groups['test@chatroom'].repliesAccepted,1);
+ const task=Object.values(f.store.data.tasks)[0];assert.equal(task.state,'done');assert.ok(task.replyParts.every(p=>p.state==='done'&&p.text===undefined));assert.ok(!readFileSync(join(f.directory,'state.json'),'utf8').includes('甲甲甲'));
+});
+test('uncertain second part survives restart; reconcile it before sending the remaining part without resending the first two',async t=>{
+ const f=fixture(t);f.codex.answer=async context=>{f.generations.push(context);return{reply:true,text:longReply}};
+ f.client.sendText=async(...args)=>{f.calls.push(args);if(f.calls.length===2)throw Error('lost response');return{...f.receipt,id:'send-'+f.calls.length}};
+ f.client.sendByKey=async()=>{throw Error('no receipt yet')};
+ await f.bridge.accept(f.event());await f.bridge.drain();assert.equal(f.calls.length,2);
+ const old=Object.values(f.store.data.tasks)[0],key=old.replyParts[1].key;assert.equal(old.replyParts[0].state,'done');assert.equal(old.state,'unknown');
+ f.store.close();const store=new StateStore(f.directory,f.binding);const bridge=new Bridge({client:f.client,codex:f.codex,store,config:f.config});
+ await bridge.drain();assert.equal(f.calls.length,2);
+ f.client.sendByKey=async(_a,k)=>{assert.equal(k,key);return{...f.receipt,id:'send-2'}};
+ await bridge.drain();await bridge.drain();assert.equal(f.calls.length,3);assert.equal(f.generations.length,1);assert.equal(Object.values(store.data.tasks)[0].state,'done');assert.equal(store.data.usage.groups['test@chatroom'].repliesAccepted,1);
+ assert.deepEqual(f.calls.map(c=>c[2]),splitReply(longReply));store.close();
+});
+test('failed or mismatched part receipts stop the sequence and retain uncertainty without retry',async t=>{
+ for(const mode of ['failed','mismatch']){
+  const f=fixture(t);f.codex.answer=async()=>({reply:true,text:longReply});
+  f.client.sendText=async(...args)=>{f.calls.push(args);return{...f.receipt,id:'send-'+f.calls.length,...(f.calls.length===2?(mode==='failed'?{state:'failed'}:{destination:'other@chatroom'}):{})}};
+  f.client.sendByKey=async()=>{throw Error('unavailable')};await f.bridge.accept(f.event());await f.bridge.drain();await f.bridge.drain();
+  assert.equal(f.calls.length,2);const task=Object.values(f.store.data.tasks)[0];assert.equal(task.state,mode==='failed'?'failed':'unknown');assert.equal(task.replyParts[0].state,'done');assert.equal(f.store.data.usage.groups['test@chatroom'].repliesAccepted,0);
+ }
+});
+test('a recalled source or changed account between parts prevents all remaining sends',async t=>{
+ for(const mode of ['recall','account']){
+  const f=fixture(t);f.codex.answer=async()=>({reply:true,text:longReply});
+  f.client.sendText=async(...args)=>{f.calls.push(args);if(mode==='recall')f.message.recall={};else f.client.account=async()=>({id:f.config.accountId,authenticated:true,ownUsername:'changed'});return f.receipt};
+  await f.bridge.accept(f.event());if(mode==='account')await assert.rejects(f.bridge.drain(),/identity changed/);else await f.bridge.drain();
+  assert.equal(f.calls.length,1);assert.equal(Object.values(f.store.data.tasks)[0].replyParts[0].state,'done');
+ }
+});
+test('a saved prepared continuation resumes only its unsent parts; legacy uncertain sends keep the original key',async t=>{
+ const f=fixture(t);await f.bridge.accept(f.event());const task=Object.values(f.store.data.tasks)[0];task.state='prepared';task.reply=longReply;task.replyParts=planReply(task);task.replyParts[0].state='done';delete task.replyParts[0].text;f.store.save();
+ f.client.sendText=async(...args)=>{f.calls.push(args);return{...f.receipt,id:'resume-'+f.calls.length}};
+ f.store.close();const store=new StateStore(f.directory,f.binding);const bridge=new Bridge({client:f.client,codex:f.codex,store,config:f.config});await bridge.drain();assert.deepEqual(f.calls.map(c=>c[2]),splitReply(longReply).slice(1));assert.equal(f.generations.length,0);
+ const g=fixture(t);await g.bridge.accept(g.event());const legacy=Object.values(g.store.data.tasks)[0];legacy.state='unknown';legacy.reply='legacy text';g.store.save();g.client.sendByKey=async(_a,key)=>{assert.equal(key,legacy.key);return g.receipt};await g.bridge.drain();assert.equal(legacy.state,'done');assert.equal(g.calls.length,0);assert.equal(g.generations.length,0);store.close();
+});
+test('corrupt persisted delivery text is rejected on startup before a send can run',async t=>{
+ const f=fixture(t);await f.bridge.accept(f.event());const task=Object.values(f.store.data.tasks)[0];task.state='prepared';task.reply=longReply;task.replyParts=planReply(task);task.replyParts[1].text+='wrong';f.store.save();f.store.close();assert.throws(()=>new StateStore(f.directory,f.binding),/integrity mismatch/);assert.equal(f.calls.length,0);
+});
+test('a journal write failure after native acceptance stops before the next part and restart reconciles the frozen first key',async t=>{
+ const f=fixture(t);f.codex.answer=async()=>({reply:true,text:longReply});const save=f.store.save.bind(f.store);let rejected=false;
+ f.store.save=()=>{const task=Object.values(f.store.data.tasks)[0];if(!rejected&&task?.replyParts?.[0].state==='done'){rejected=true;throw Error('disk unavailable')}save()};
+ f.client.sendText=async(...args)=>{f.calls.push(args);return{...f.receipt,id:'send-'+f.calls.length}};
+ await f.bridge.accept(f.event());await assert.rejects(f.bridge.drain(),/disk unavailable/);assert.equal(f.calls.length,1);
+ const persisted=JSON.parse(readFileSync(join(f.directory,'state.json'),'utf8')),task=Object.values(persisted.tasks)[0];assert.equal(task.state,'submitting');assert.equal(task.replyParts[0].state,'submitting');
+ f.store.close();const store=new StateStore(f.directory,f.binding);f.client.sendByKey=async(_a,key)=>{assert.equal(key,task.key);return{...f.receipt,id:'send-1'}};
+ const bridge=new Bridge({client:f.client,codex:f.codex,store,config:f.config});await bridge.drain();assert.equal(f.calls.length,3);assert.deepEqual(f.calls.map(c=>c[2]),splitReply(longReply));store.close();
+});
 
 test('live group message generates one accepted reply; duplicate cursor and later duplicate observation do not send twice', async t => {
   const f = fixture(t);

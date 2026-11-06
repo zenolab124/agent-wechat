@@ -99,6 +99,9 @@ test("editing preserves the base, applies simultaneous changes, and can continue
   assert.deepEqual(decodeDeck(base).ids, ids);
   assert.deepEqual(decodeDeck(first.code).ids, ["Card12", ...ids.slice(1)]);
   assert.equal(decodeDeck(first.code).name, "原卡组");
+  assert.ok(first.replyText.includes('卡0 → 卡12'));
+  assert.ok(!first.replyText.includes('1. '));
+  assert.ok(!first.replyText.includes('粘贴导入'));
   const second = textDeckCode(
     {
       ...q,

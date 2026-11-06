@@ -2,6 +2,7 @@ import { mkdirSync, openSync, closeSync, writeFileSync, readFileSync, renameSync
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { recordResult, TOKEN_FIELDS } from './usage.mjs';
+import { validateReplyParts } from './reply-delivery.mjs';
 
 export class StateStore {
   constructor(directory, binding) {
@@ -48,6 +49,7 @@ export class StateStore {
           || group.callTimes.length > group.callsStarted || (group.callsStarted === 0) !== (group.lastCallAt === null)) throw Error('Inconsistent usage journal');
       }
       // A crash during inference never grants another model call for the same batch.
+      for (const task of Object.values(this.data.tasks)) validateReplyParts(task);
       for (const task of Object.values(this.data.tasks)) if (task.state === 'generating') {
         recordResult(this.data, task, null, 'unknown');
         task.state = 'generation-unknown';

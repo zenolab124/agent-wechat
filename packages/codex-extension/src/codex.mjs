@@ -184,9 +184,9 @@ export class CodexClient {
           continue;
         }
         if (!decision.lookup) {
-          if(decision.reply && (engineOperations.length || prefetched.some(r=>r.query?.kind?.startsWith('engine_'))) && needsPlayerRewrite(decision.text,{allowTestingSummary:(context.messages??[]).some(m=>/怎么测|如何测|测试过程|验证过程|怎么验证|怎样验证/.test(m.text??""))})){
+          if(decision.reply && (engineOperations.length || prefetched.some(r=>r.query?.kind?.startsWith('engine_'))) && needsPlayerRewrite(decision.text,{allowTestingSummary:(context.messages??[]).some(m=>/来源|出处|依据|资料版本|更新时间|怎么确认|怎么测|如何测|测试过程|验证过程|怎么验证|怎样验证/.test(m.text??""))})){
             if(++presentationRepairs>2)return {reply:true,text:'这个联动我还需要再核对，先不误导大家。',engineOperations,usage:completeUsage?tokenUsage(combined):null,modelRequests:requests};
-            inputContext={playerSummaryRewrite:{draft:decision.text,instruction:'这份草稿含内部诊断信息，尚未发送。只保留有依据的游戏结论，用中文牌名、游戏时点和目标解释，通常两三句，一个短段落；不要复述测试经过。技术字段/源码/版本/种子/证据档位全部留在内部。不要增加新事实，不宣称官方设计意图；证据只有引擎时简短说按当前验证。'},mode:context.mode,...(context.replyRequired?{replyRequired:true}:{})};
+            inputContext={playerSummaryRewrite:{draft:decision.text,instruction:'这份草稿含内部诊断信息，尚未发送。只保留有依据的游戏结论，用中文牌名、游戏时点和目标解释，通常两三句，一个短段落；不要复述测试经过。技术字段/源码/版本/种子/证据档位全部留在内部。不要增加新事实，不宣称官方设计意图；来源与验证详情留在内部，用户追问来源时再说明；默认不加按当前验证之类的来源前缀。'},mode:context.mode,...(context.replyRequired?{replyRequired:true}:{})};
             continue;
           }
           const codes = decision.reply ? issuedDeckCodes(decision.text) : [];

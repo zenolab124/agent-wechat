@@ -299,6 +299,7 @@ function render(data) {
     );
     if (task.sendId) row.append(el("small", `发送 ID：${task.sendId}`));
     if(task.replyStyle) row.append(el("small", `回复形式：${task.replyStyle.mode === "quote" ? "原生引用" : "直接回复"} · ${task.replyStyle.reason}`));
+    if(task.replyParts?.length>1) row.append(el("small", `分条发送：${task.replyParts.map(p=>`${p.index}/${task.replyParts.length} ${p.state}`).join(' · ')}`));
     if (task.trigger === "image-deck-request")
       row.append(el("small", "明确请求截图转码 · @可选 · 目标图片绑定"));
     if (task.verifiedDeckCode)

@@ -558,6 +558,16 @@ collection, votes and source rank do not establish current deck strength. Model
 answers can use only official-format codes issued by local lookup, not codes
 invented or modified by the model.
 
+Group answers default to a short paragraph with the result. Effect questions give
+the effect; costs, power and historical changes are added when asked. Sources,
+snapshot dates and verification details are provided
+when asked. Follow-ups add only the new information. Longer answers are sent in
+two or three ordered messages without another model call. Codes, links and fenced
+content stay whole; only the first message uses a native quote when needed.
+Each message has its own saved send key and receipt. The next message waits for
+acceptance; an uncertain result is reconciled without another send. Completed
+parts keep receipt metadata rather than a second copy of their message text.
+
 Text lists can also become codes: provide twelve card names and ask
 `把这些文字卡名生成卡组码`. To edit a deck, paste its official code or refer to
 the previous deck in the group and say `把甲换成乙，给我新码`. No mention is
@@ -571,6 +581,9 @@ The lookup operations are `encode_text_deck` with `region`, twelve `cards`
 `code`, one to twelve `replacements: [{from, to}]`, and optional `name`.
 Replacements apply together to the original composition. Successful output is
 recorded in the same group conversation, so the next edit uses the new code.
+An edit returns the changed cards and complete new code; it does not repeat the
+twelve-card list or the game's import instructions. A first conversion retains
+the full list for checking.
 Text requests do not select an unrelated recent screenshot, and image conversion
 still uses its separate source and recognition checks. These operations use local
 files and do not modify the shared library, game decks or account data.
